@@ -1,7 +1,7 @@
 /**
 * Name: main
 * Entry point for festival simulation 
-* Author: conor
+* Author: conor, Edwin
 * Tags: 
 */
 
@@ -13,6 +13,9 @@ global {
 	int foodStoreNumber <- 2;
 	int waterStoreNumber <- 2;
 	point infoCenterLocation;
+	
+	// Challenge 1
+	bool useCache <- false;
 	
 	init {
 		create Guest number: guestNumber;
@@ -27,6 +30,15 @@ global {
 		}
 	}
 	
+	reflex printTotalSteps when: cycle mod 100000 = 0 {
+		int totalSteps <- sum(Guest collect each.steps);
+		write "Total steps taken by all guests: " + totalSteps + " at cycle: " + cycle + " with cache: " + useCache;
+		ask Guest {
+			steps <- 0;
+		}
+		useCache <- !useCache;
+		
+	}
 }
 
 species Guest skills: [moving] {
@@ -37,6 +49,12 @@ species Guest skills: [moving] {
 	
 	Store targetStore <- nil;
 	
+	// Challenge 1
+	int steps <- 0;
+	bool willForget <- false update: flip(0.3); // chance to forget/wanna try something new
+	Store cachedFood <- nil;
+	Store cachedDrink <- nil;
+	
 	bool isHungry {
 		return hunger < 20;
 	}
@@ -45,22 +63,48 @@ species Guest skills: [moving] {
 		return thirst < 20;
 	}
 	
+	action maybeApplyCache {
+		if (targetStore != nil or useCache = false) {
+			return;
+		}
+		if (isHungry() and cachedFood != nil) {
+			if (willForget) {
+				cachedFood <- nil;
+			}
+			else {
+				targetStore <- cachedFood;
+			}
+		}
+		else if (isThirsty() and cachedDrink != nil) {
+			if (willForget) {
+				cachedDrink <- nil;
+			} else {
+				targetStore <- cachedDrink;
+			}
+		}
+	}
+	
 	reflex move {
-		// guest is hungry/thirsty and hasn't gotten location of target store yet from InformationCenter
+		do maybeApplyCache;
+		// guest is hungry/thirsty and hasn't gotten location of target store yet from InformationCenter or cache
 		if ((isHungry() or isThirsty()) and targetStore = nil) {
 			// guest is within range to ask InformationCenter for nearest store
 			if (distance_to(self, infoCenterLocation) < 5.0) {
 				targetStore <- askForTargetStore();
+				steps <- steps+1;
 				do goto target: targetStore;
 			} 
 			// guest isn't within range to ask, keep moving towards InformationCenter
 			else {
+				steps <- steps+1;
 				do goto target: infoCenterLocation;
 			}
 		} 
 		// guest has gotten location of nearest store and is on way to it
 		else if (targetStore != nil) {
+			steps <- steps+1;
 			do goto target: targetStore;
+			
 		} else {
 			do wander;
 		}
@@ -76,6 +120,15 @@ species Guest skills: [moving] {
     	targetStore <- nil;
 	}
 	
+	action cacheStore(Store store) {
+		if (store.hasFood) {
+			cachedFood <- store;
+		}
+		if (store.hasWater) {
+			cachedDrink <- store;
+		}
+	}
+	
 	Store askForTargetStore {
 		Store store <- nil;
 		ask InformationCenter {
@@ -87,6 +140,9 @@ species Guest skills: [moving] {
 				store <- self.getNearestWaterStore(myself);
 			}
 		}
+		do cacheStore(store);
+		
+		
 		return store;
 	}
 	
@@ -149,3 +205,4 @@ experiment festivalSimulation type:gui {
 		}
 	}
 }
+
