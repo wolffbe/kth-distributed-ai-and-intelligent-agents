@@ -1,3 +1,11 @@
+/**
+* Name: main
+* Entry point for festival simulation 
+* Author: conor, Edwin, Benedict
+* Tags: 
+*/
+
+
 model festival
 
 global {
@@ -102,10 +110,12 @@ species Guest skills: [moving] {
 	}
 	
 	reflex move {
-		do maybeApplyCache;
 		if (!isBad and length(badGuests) > 0) {
 			do goto target: infoCenterLocation;
-		} else if (isHungry() or isThirsty()) {
+			return;
+		}
+		do maybeApplyCache;
+		if (isHungry() or isThirsty()) {
 			if (targetStore = nil) {
 				// guest is hungry/thirsty and hasn't gotten location of target store yet from InformationCenter or cache
 				if (distance_to(self, infoCenterLocation) < 1.0) {
