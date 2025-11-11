@@ -1,7 +1,7 @@
 /**
 * Name: main
 * Entry point for festival simulation 
-* Author: conor, Edwin, Benedict
+* Author: Conor, Edwin, Benedict
 * Tags: 
 */
 
@@ -9,17 +9,18 @@
 model festival
 
 global {
-	int guestNumber <- 50;
-	int guardNumber <- 10;
+	int guestNumber <- 20;
 	int foodStoreNumber <- 2;
 	int waterStoreNumber <- 2;
-	point infoCenterLocation;
+	InformationCenter infoCenter;
 	
 	init {
-		create Guest number: guestNumber;
-		create Guard number: guardNumber;
+		// `with` allows passing a map of key-value pairs to initialize attributes- enable cache for approximately half the guests
+		create Guest number: guestNumber with: [
+			useCache::flip(0.5)
+		];
 		create InformationCenter {
-			infoCenterLocation <- self.location;
+			infoCenter <- self;
 		}
 		create Store number: foodStoreNumber {
 			hasFood <- true;
@@ -27,98 +28,59 @@ global {
 		create Store number: waterStoreNumber {
 			hasWater <- true;
 		}
-		
-		// Enable cache for half the guests
-		int halfGuests <- int(guestNumber / 2);
-		loop i from: 0 to: halfGuests - 1 {
-			ask Guest[i] {
-				useCache <- true;
-			}
-		}
+		create Guard;
 	}
 	
-	reflex printTotalSteps when: cycle mod 100000 = 0 {
-		int totalStepsCache <- sum(Guest where each.useCache collect each.steps);
-		int totalStepsNoCache <- sum(Guest where !each.useCache collect each.steps);
-		write "Steps by brain: " + totalStepsCache + " steps by no brain " + totalStepsNoCache + " at cycle: " + cycle;
-		ask Guest {
-			steps <- 0;
-		}		
+	reflex printAverageSteps when: cycle mod 1000 = 0 {
+		float averageStepsCache <- sum(Guest where each.useCache collect each.steps) / length(Guest where each.useCache);
+		float averageStepsNoCache <- sum(Guest where !each.useCache collect each.steps) / length(Guest where !each.useCache);
+		write "Average steps by: \n- brain: " + round(averageStepsCache) + 
+			"\n- no brain " + round(averageStepsNoCache) + "\nat cycle: " + cycle + "\n";		
 	}
 }
 
 species Guest skills: [moving] {
-	// randomize hunger/thirst levels to start in range [10, 100] for each guest, and increase at
+	// randomize hunger/thirst levels to start in range [10, 100] for each guest, and decrease at
 	// varying rates
-	float hunger <- rnd(10.0, 100.0) update: hunger + rnd(0.01, 0.1);
-	float thirst <- rnd(10.0, 100.0) update: thirst + rnd(0.01, 0.1);
-	bool isBad <- flip(0.3);
-	list<Guest> badGuests <- nil;
-	list<Guest> reportedGuests <- nil;
-	
+	float food <- rnd(50.0, 100.0) update: food - rnd(0.1, 1.0);
+	float water <- rnd(50.0, 100.0) update: water - rnd(0.1, 2.0);
 	Store targetStore <- nil;
 	
-	// Challenge 1
 	bool useCache <- false;
-	int steps <- 0;
 	Store cachedFood <- nil;
-	Store cachedDrink <- nil;
+	Store cachedWater <- nil;
+	int steps <- 0;
+	
+	bool isBad <- flip(0.2);
+	list<Guest> guestsToReport <- [];
 	
 	bool isHungry {
-		if (hunger > 80) {
-			return true;
-		} else {
-			return false;
-		}
+		return food < 20;
 	}
 	
 	bool isThirsty {
-		if (thirst > 80) {
-			return true;
-		} else {
-			return false;
-		}
+		return water < 20;
 	}
-	
-	action maybeForget(string what) {
-		if !flip(0.5) { // chance to forget
-			return;
-		}
-		if (what = "food") {
-			cachedFood <- nil;
-			
-		} else if (what = "drink") {
-			cachedDrink <- nil;
-		} else { // both
-			cachedFood <- nil;
-			cachedDrink <- nil;
-		}
-	}
-	
-	action maybeApplyCache {
-		if (targetStore != nil or useCache = false) {
-			return;
-		}
-		if (isHungry() and cachedFood != nil) {
-			do maybeForget("food");
-			targetStore <- cachedFood;
-		}
-		else if (isThirsty() and cachedDrink != nil) {
-			do maybeForget("drink");
-			targetStore <- cachedDrink;
-		}
+
+	// small chance to forget
+	reflex forget when: flip(0.01) {
+	    string forgets <- one_of(["food", "water"]);
+	    if (forgets = "food") {
+	    	cachedFood <- nil;
+	    } else {
+	    	cachedWater <- nil;
+	    }
 	}
 	
 	reflex move {
-		if (!isBad and length(badGuests) > 0) {
-			do goto target: infoCenterLocation;
-			return;
-		}
-		do maybeApplyCache;
-		if (isHungry() or isThirsty()) {
+		// report bad guests with priority
+		if (!empty(guestsToReport)) {
+			do goto target: infoCenter;
+		} else if (isHungry() or isThirsty()) {
+			do applyCache;
 			if (targetStore = nil) {
 				// guest is hungry/thirsty and hasn't gotten location of target store yet from InformationCenter or cache
-				if (distance_to(self, infoCenterLocation) < 1.0) {
+				if (distance_to(self, infoCenter) < 1.0) {
 					// guest is within range to ask InformationCenter for nearest store
 					targetStore <- askForTargetStore();
 					steps <- steps+1;
@@ -127,26 +89,26 @@ species Guest skills: [moving] {
 				// guest isn't within range to ask, keep moving towards InformationCenter
 				else {
 					steps <- steps+1;
-					do goto target: infoCenterLocation;
+					do goto target: infoCenter;
 				}
 			} else {
 				steps <- steps+1;
 				do goto target: targetStore;
 			}
 		} else {
-			// Steps intentionally not incremented as we only track "productive steps"
+			// don't increment steps so we only track "productive steps"
 			do wander;
 		}
 	}
 	
 	reflex eat when: targetStore != nil and distance_to(self, targetStore) < 1.0 and targetStore.hasFood {
-    	hunger <- 0.0;
+    	food <- 100.0;
 		do cacheStore(targetStore);
     	targetStore <- nil;
 	}
 	
 	reflex drink when: targetStore != nil and distance_to(self, targetStore) < 1.0 and targetStore.hasWater {
-    	thirst <- 0.0;
+    	water <- 100.0;
 		do cacheStore(targetStore);
     	targetStore <- nil;
 	}
@@ -156,23 +118,34 @@ species Guest skills: [moving] {
 			cachedFood <- store;
 		}
 		if (store.hasWater) {
-			cachedDrink <- store;
-		}
-	}
-
-	reflex witness {
-		list<Guest> guests <- Guest where (each.isBad and distance_to(each, self) < 3.0);
-		if !(reportedGuests contains_any guests) {
-			badGuests <- badGuests + guests;
+			cachedWater <- store;
 		}
 	}
 	
-	reflex report when: distance_to(self, infoCenterLocation) < 1.0 {
-		ask InformationCenter {
-			do reportGuests(myself.badGuests);
+	action applyCache {
+		if (targetStore != nil or useCache = false) {
+			return;
 		}
-		reportedGuests <- reportedGuests + badGuests;
-		badGuests <- nil;
+		if (isHungry() and cachedFood != nil) {
+			targetStore <- cachedFood;
+		}
+		else if (isThirsty() and cachedWater != nil) {
+			targetStore <- cachedWater;
+		}
+	}
+
+	reflex witness when: !isBad {
+		// when a good guest gets close to a bad guest, report them
+		list<Guest> badGuests <- Guest where (each.isBad and distance_to(each, self) < 3.0 and !(guestsToReport contains each));
+		
+		guestsToReport <- guestsToReport + badGuests;	
+	}
+	
+	reflex report when: distance_to(self, infoCenter) < 1.0 and !empty(guestsToReport) {
+		ask InformationCenter {
+			do handleGuestsReport(myself.guestsToReport);
+		}
+		guestsToReport <- [];
 	}
 
 	Store askForTargetStore {
@@ -191,56 +164,70 @@ species Guest skills: [moving] {
 	
 	aspect base {
 		rgb guestColor <- #green;
-		if (isThirsty()) {
-			guestColor <- #orange;
+		if (isHungry() and isThirsty()) {
+			guestColor <- #red;
 		} else if (isHungry()) {
 			guestColor <- #orange;
-		} else if (self.isBad) {
-			guestColor <- #red;
+		} else if (isThirsty()) {
+			guestColor <- #yellow;
 		}
 		
-		draw circle(1) color: guestColor;
+		if (self.isBad) {
+			draw square(2) color: guestColor;
+		} else {
+			draw circle(1) color: guestColor;
+		}
+		
 	}
 }
 
 species Guard skills: [moving] {
 	bool isCalled <- false;
-	bool isIdle <- true;
-	list<Guest> targets <- nil;
+	list<Guest> targets <- [];
 	
 	reflex move {
-		if (isCalled and !isIdle) {
-			isIdle <- false;
-			do goto(target: infoCenterLocation);
+		// prioritise handling existing bad guests over getting new reports
+		if (!empty(targets)) {
+			Guest target <- targets[0];
+			do goto target: target;
+			if (distance_to(self, target) < 1.0) {
+				do arrest(target);
+			}
+		} else if (isCalled) {
+			do goto(target: infoCenter);
 		} else {
 			do wander;
 		}
 	}
 	
-	reflex report when: distance_to(self, infoCenterLocation) < 1.0 {
+	reflex getReports when: distance_to(self, infoCenter) < 1.0 {
 		ask InformationCenter {
-			myself.targets <- self.reportedGuests;
+			myself.targets <- union(myself.targets, self.reportedGuests);
 		}
+		isCalled <- false;
 	}
-
-	reflex arrest {
-		list<Guest> guests <- Guest where (each.isBad and distance_to(each, self) < 1.0);
-		if (targets contains_any guests) {
-			ask Guest at_distance(1) {
-				do die;
-			}
-			isIdle <- true;
+	
+	action arrest(Guest target) {
+		write target.name + " has been arrested by the guard.\n" ;
+		ask target {
+			do die;
+		}
+		
+		// remove target from targets
+		targets >> target;
+		
+		ask infoCenter {
+			do handleGuestArrest(target);
 		}
 	}
 			
 	aspect base {
-		rgb guardColor <- #blue;
-		draw circle(1) color: guardColor;
+		draw circle(2) color: #black;
 	}
 }
 
 species InformationCenter {
-	list<Guest> reportedGuests <- nil;
+	list<Guest> reportedGuests <- [];
 				
 	action getNearestStore(agent guest) {
         Store nearest <- closest_to(Store, guest);
@@ -257,29 +244,29 @@ species InformationCenter {
 		return closest_to(waterStores, guest);
 	}
 		
-	InformationCenter getInformationCenter(Guard guard) {
-		list<InformationCenter> informationCenters <- InformationCenter where (each != nil);
-		return closest_to(informationCenters, guard);
+	action handleGuestsReport(list<Guest> badGuests) {
+		// while guest was travelling to infoCentre to report, bad guest could have been arrested
+		badGuests <- badGuests where (!dead(each));
+		
+		list<Guest> newBadGuests <- badGuests - reportedGuests;
+		if (!empty(newBadGuests)) {
+			write "Guests reported: " + collect(newBadGuests, each.name) + "\n";
+		}
+		
+		// avoid duplicates when multiple guests report same bad guests
+	    reportedGuests <- reportedGuests union badGuests;
+	    ask Guard {
+	        self.isCalled <- true;
+	    }
 	}
 	
-	action reportGuests(list<Guest> guests) {
-		reportedGuests <- reportedGuests + guests;
-		ask Guard {
-			self.isCalled <- true;
-		}
-	}
-	
-	action getReport {
-		ask Guard {
-			self.isCalled <- false;
-		}
-		list<Guest> reports <- reportedGuests;
-		self.reportedGuests <- nil;
-		return reports;
+	// remove arrested guest from reportedGuests
+	action handleGuestArrest(Guest guest) {
+		reportedGuests >> guest;
 	}
 
 	aspect base {
-		draw square(3) color: #salmon;
+		draw hexagon(3) color: #salmon;
 		draw "InfoCenter" color: #black at: location + {-3, 3};
 	}
 	
