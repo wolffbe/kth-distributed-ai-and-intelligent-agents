@@ -67,13 +67,19 @@ species Guest skills: [moving] {
 		return thirst < 20;
 	}
 	
-	// didnt work as reflex as executes too frequently
-	action maybeForget {
-		if !flip(0.1) { // chance to forget
+	action maybeForget(string what) {
+		if !flip(0.5) { // chance to forget
 			return;
 		}
-		cachedFood <- nil;
-		cachedDrink <- nil;
+		if (what = "food") {
+			cachedFood <- nil;
+			
+		} else if (what = "drink") {
+			cachedDrink <- nil;
+		} else { // both
+			cachedFood <- nil;
+			cachedDrink <- nil;
+		}
 	}
 	
 	action maybeApplyCache {
@@ -81,11 +87,11 @@ species Guest skills: [moving] {
 			return;
 		}
 		if (isHungry() and cachedFood != nil) {
-			do maybeForget;
+			do maybeForget("food");
 			targetStore <- cachedFood;
 		}
 		else if (isThirsty() and cachedDrink != nil) {
-			do maybeForget;
+			do maybeForget("drink");
 			targetStore <- cachedDrink;
 		}
 	}
