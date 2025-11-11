@@ -1,7 +1,7 @@
 /**
 * Name: main
 * Entry point for festival simulation 
-* Author: conor
+* Author: conor, Edwin
 * Tags: 
 */
 
@@ -25,8 +25,24 @@ global {
 		create Store number: waterStoreNumber {
 			hasWater <- true;
 		}
+		
+		// Enable cache for half the guests
+		int halfGuests <- int(guestNumber / 2);
+		loop i from: 0 to: halfGuests - 1 {
+			ask Guest[i] {
+				useCache <- true;
+			}
+		}
 	}
 	
+	reflex printTotalSteps when: cycle mod 100000 = 0 {
+		int totalStepsCache <- sum(Guest where each.useCache collect each.steps);
+		int totalStepsNoCache <- sum(Guest where !each.useCache collect each.steps);
+		write "Steps by brain: " + totalStepsCache + " steps by no brain " + totalStepsNoCache + " at cycle: " + cycle;
+		ask Guest {
+			steps <- 0;
+		}		
+	}
 }
 
 species Guest skills: [moving] {
@@ -37,6 +53,12 @@ species Guest skills: [moving] {
 	
 	Store targetStore <- nil;
 	
+	// Challenge 1
+	bool useCache <- false;
+	int steps <- 0;
+	Store cachedFood <- nil;
+	Store cachedDrink <- nil;
+	
 	bool isHungry {
 		return hunger < 20;
 	}
@@ -45,35 +67,81 @@ species Guest skills: [moving] {
 		return thirst < 20;
 	}
 	
+	action maybeForget(string what) {
+		if !flip(0.5) { // chance to forget
+			return;
+		}
+		if (what = "food") {
+			cachedFood <- nil;
+			
+		} else if (what = "drink") {
+			cachedDrink <- nil;
+		} else { // both
+			cachedFood <- nil;
+			cachedDrink <- nil;
+		}
+	}
+	
+	action maybeApplyCache {
+		if (targetStore != nil or useCache = false) {
+			return;
+		}
+		if (isHungry() and cachedFood != nil) {
+			do maybeForget("food");
+			targetStore <- cachedFood;
+		}
+		else if (isThirsty() and cachedDrink != nil) {
+			do maybeForget("drink");
+			targetStore <- cachedDrink;
+		}
+	}
+	
 	reflex move {
-		// guest is hungry/thirsty and hasn't gotten location of target store yet from InformationCenter
+		do maybeApplyCache;
+		// guest is hungry/thirsty and hasn't gotten location of target store yet from InformationCenter or cache
 		if ((isHungry() or isThirsty()) and targetStore = nil) {
 			// guest is within range to ask InformationCenter for nearest store
 			if (distance_to(self, infoCenterLocation) < 5.0) {
 				targetStore <- askForTargetStore();
+				steps <- steps+1;
 				do goto target: targetStore;
 			} 
 			// guest isn't within range to ask, keep moving towards InformationCenter
 			else {
+				steps <- steps+1;
 				do goto target: infoCenterLocation;
 			}
 		} 
 		// guest has gotten location of nearest store and is on way to it
 		else if (targetStore != nil) {
+			steps <- steps+1;
 			do goto target: targetStore;
+			
 		} else {
+			// Steps intentionally not incremented as we only track "productive steps"
 			do wander;
 		}
 	}
 	
 	reflex eat when: targetStore != nil and distance_to(self, targetStore) < 1.0 and targetStore.hasFood {
     	hunger <- 100.0;
+		do cacheStore(targetStore);
     	targetStore <- nil;
 	}
 	
 	reflex drink when: targetStore != nil and distance_to(self, targetStore) < 1.0 and targetStore.hasWater {
     	thirst <- 100.0;
+		do cacheStore(targetStore);
     	targetStore <- nil;
+	}
+	
+	action cacheStore(Store store) {
+		if (store.hasFood) {
+			cachedFood <- store;
+		}
+		if (store.hasWater) {
+			cachedDrink <- store;
+		}
 	}
 	
 	Store askForTargetStore {
@@ -86,7 +154,8 @@ species Guest skills: [moving] {
 			} else {
 				store <- self.getNearestWaterStore(myself);
 			}
-		}
+		}		
+		
 		return store;
 	}
 	
@@ -149,3 +218,4 @@ experiment festivalSimulation type:gui {
 		}
 	}
 }
+
