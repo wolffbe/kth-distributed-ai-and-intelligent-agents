@@ -14,9 +14,6 @@ global {
 	int waterStoreNumber <- 2;
 	point infoCenterLocation;
 	
-	// Challenge 1
-	bool useCache <- false;
-	
 	init {
 		create Guest number: guestNumber;
 		create InformationCenter {
@@ -28,16 +25,23 @@ global {
 		create Store number: waterStoreNumber {
 			hasWater <- true;
 		}
+		
+		// Enable cache for half the guests
+		int halfGuests <- int(guestNumber / 2);
+		loop i from: 0 to: halfGuests - 1 {
+			ask Guest[i] {
+				useCache <- true;
+			}
+		}
 	}
 	
 	reflex printTotalSteps when: cycle mod 100000 = 0 {
-		int totalSteps <- sum(Guest collect each.steps);
-		write "Total steps taken by all guests: " + totalSteps + " at cycle: " + cycle + " with cache: " + useCache;
+		int totalStepsCache <- sum(Guest where each.useCache collect each.steps);
+		int totalStepsNoCache <- sum(Guest where !each.useCache collect each.steps);
+		write "Steps by brain: " + totalStepsCache + " steps by no brain " + totalStepsNoCache + " at cycle: " + cycle;
 		ask Guest {
 			steps <- 0;
-		}
-		useCache <- !useCache;
-		
+		}		
 	}
 }
 
@@ -50,8 +54,8 @@ species Guest skills: [moving] {
 	Store targetStore <- nil;
 	
 	// Challenge 1
+	bool useCache <- false;
 	int steps <- 0;
-	bool willForget <- false update: flip(0.3); // chance to forget/wanna try something new
 	Store cachedFood <- nil;
 	Store cachedDrink <- nil;
 	
@@ -63,24 +67,26 @@ species Guest skills: [moving] {
 		return thirst < 20;
 	}
 	
+	// didnt work as reflex as executes too frequently
+	action maybeForget {
+		if !flip(0.1) { // chance to forget
+			return;
+		}
+		cachedFood <- nil;
+		cachedDrink <- nil;
+	}
+	
 	action maybeApplyCache {
 		if (targetStore != nil or useCache = false) {
 			return;
 		}
 		if (isHungry() and cachedFood != nil) {
-			if (willForget) {
-				cachedFood <- nil;
-			}
-			else {
-				targetStore <- cachedFood;
-			}
+			do maybeForget;
+			targetStore <- cachedFood;
 		}
 		else if (isThirsty() and cachedDrink != nil) {
-			if (willForget) {
-				cachedDrink <- nil;
-			} else {
-				targetStore <- cachedDrink;
-			}
+			do maybeForget;
+			targetStore <- cachedDrink;
 		}
 	}
 	
@@ -106,17 +112,20 @@ species Guest skills: [moving] {
 			do goto target: targetStore;
 			
 		} else {
+			// Steps intentionally not incremented as we only track "productive steps"
 			do wander;
 		}
 	}
 	
 	reflex eat when: targetStore != nil and distance_to(self, targetStore) < 1.0 and targetStore.hasFood {
     	hunger <- 100.0;
+		do cacheStore(targetStore);
     	targetStore <- nil;
 	}
 	
 	reflex drink when: targetStore != nil and distance_to(self, targetStore) < 1.0 and targetStore.hasWater {
     	thirst <- 100.0;
+		do cacheStore(targetStore);
     	targetStore <- nil;
 	}
 	
@@ -139,9 +148,7 @@ species Guest skills: [moving] {
 			} else {
 				store <- self.getNearestWaterStore(myself);
 			}
-		}
-		do cacheStore(store);
-		
+		}		
 		
 		return store;
 	}
