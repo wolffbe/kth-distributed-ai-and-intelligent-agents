@@ -31,11 +31,17 @@ global {
 		create Guard;
 	}
 	
-	reflex printAverageSteps when: cycle mod 1000 = 0 {
+	reflex printAverageSteps when: cycle mod 500 = 0 {
 		float averageStepsCache <- sum(Guest where each.useCache collect each.steps) / length(Guest where each.useCache);
 		float averageStepsNoCache <- sum(Guest where !each.useCache collect each.steps) / length(Guest where !each.useCache);
 		write "Average steps by: \n- brain: " + round(averageStepsCache) + 
 			"\n- no brain " + round(averageStepsNoCache) + "\nat cycle: " + cycle + "\n";		
+	}
+	
+	action sometimes_log(float prob, string text) {
+		if (rnd(1.0) < prob) {
+			write text;
+		}
 	}
 }
 
@@ -83,6 +89,12 @@ species Guest skills: [moving] {
 				if (distance_to(self, infoCenter) < 1.0) {
 					// guest is within range to ask InformationCenter for nearest store
 					targetStore <- askForTargetStore();
+					
+					// occasionally log for observability
+					ask world {
+						do sometimes_log(0.1, myself.name + " couldn't remember a nearby store, but got it from\nthe information center.\n");
+					}
+					
 					steps <- steps+1;
 					do goto target: targetStore;
 				}
@@ -128,9 +140,17 @@ species Guest skills: [moving] {
 		}
 		if (isHungry() and cachedFood != nil) {
 			targetStore <- cachedFood;
+			// occasionally log cache use for observability
+			ask world {
+				do sometimes_log(0.1, myself.name + " has remembered a nearby food store.\n");
+			}
 		}
 		else if (isThirsty() and cachedWater != nil) {
 			targetStore <- cachedWater;
+			// occasionally log cache use for observability
+			ask world {
+				do sometimes_log(0.1, myself.name + " has remembered a nearby drink store.\n");
+			}
 		}
 	}
 
@@ -138,6 +158,13 @@ species Guest skills: [moving] {
 		// when a good guest gets close to a bad guest, report them
 		list<Guest> badGuests <- Guest where (each.isBad and distance_to(each, self) < 3.0 and !(guestsToReport contains each));
 		
+		// occasionally log for observability
+		ask world {
+			if (!empty(badGuests)) {
+			    do sometimes_log(0.05, myself.name + " has witnessed the following bad guests: " + collect(badGuests, each.name) + "\n");
+			}
+		}
+
 		guestsToReport <- guestsToReport + badGuests;	
 	}
 	
@@ -250,8 +277,13 @@ species InformationCenter {
 		
 		list<Guest> newBadGuests <- badGuests - reportedGuests;
 		if (!empty(newBadGuests)) {
-			write "Guests reported: " + collect(newBadGuests, each.name) + "\n";
+			write "The following bad guests have been reported: " + collect(newBadGuests, each.name) + "\n";
 		}
+		
+		// only log for observability for new reports
+	    if (!empty(badGuests - reportedGuests)) {
+	    	write "Guard has been called to the information center.\n";
+	    }
 		
 		// avoid duplicates when multiple guests report same bad guests
 	    reportedGuests <- reportedGuests union badGuests;
