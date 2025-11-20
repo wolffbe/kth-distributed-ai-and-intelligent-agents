@@ -446,7 +446,7 @@ species Auctioneer skills: [moving, fipa] {
     	auctionStartTime <- int(time);
         do start_conversation to: list(Guest) protocol: 'fipa-propose' performative: 'cfp' 
            contents: ['invite', auctionedItem, auctionType];
-        write "Inviting guests to participate in a " + auctionType + " auction for " + auctionedItem + "\n";
+        write "[" + name +  "] " + "Inviting guests to participate in a " + auctionType + " auction for " + auctionedItem + "\n";
     }
 
 	// if guests accept proposal to join auction, add them to participants
@@ -456,7 +456,7 @@ species Auctioneer skills: [moving, fipa] {
             participants <- participants + reply.sender;
         }
         if ((auctionType = "dutch" and !empty(participants)) or ((auctionType = "sealed-bid" or auctionType = "vickrey") and length(participants) >= 2)) {
-        	write "[" + name +  "] " + "Auction started: Selling " + auctionedItem + " with " + length(participants) + " participants.\n";
+        	write "[" + name +  "] " + "Selling " + auctionedItem + " with " + length(participants) + " participants in " + auctionType + " auction.\n";
         } else {
         	write "[" + name +  "] " + "No interested participants, cancelling auction.\n";
         	auctionStartTime <- -1;
@@ -464,16 +464,17 @@ species Auctioneer skills: [moving, fipa] {
     }
     
 	reflex waitForGuestsToGather when: !empty(participants) and (participants max_of (location distance_to(each.location)) <= auctionParticipationRadius) 
-		and !auctionActive {
+		and !auctionActive 
+		and (auctionType = "dutch" and !empty(participants)) or ((auctionType = "sealed-bid" or auctionType = "vickrey") and length(participants) >= 2){
 	    auctionActive <- true;
-        write "Auction started: Selling " + auctionedItem + " with " + length(participants) + " participants.\n";
+        write "[" + name +  "] " + "Selling " + auctionedItem + " with " + length(participants) + " participants in + " + auctionType + " auction.\n";
 	}
 
 	// send a new decreased proposal every 5 cycles
     reflex sendDutchProposal when: auctionActive and auctionType = "dutch" and int(time) mod 5 = 0 {
     	if (currentPrice < minimumPrice) {
     		do start_conversation to: participants protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
-    		write "[" + name +  "] " + "Auction has ended: minimum price exceeded.\n";
+    		write "[" + name +  "] " + "Dutch auction has ended: minimum price exceeded.\n";
     		do resetAuction;
 			return;
     	}
