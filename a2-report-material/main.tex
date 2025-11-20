@@ -1,0 +1,89 @@
+\subsection{Challenge 1: Multiple auctions in the festival}
+
+\subsubsection{Explanation}
+This challenge was about allowing multiple auctioneers to exist - each selling a specific type of of item, in our implementation: hoodies, t-shirts and socks. Furthermore, all agents have a preference for what type of of item they are going to include themselves in based on a preference ``soughtItem''. 
+
+\subsubsection{Implementation}
+The implementation for this was pretty straight forward and required adding soughtItem attribute to all Guests and when they receive a message of an auction starting they will check if the item being auctioned (part of the invitation message) and only accept if they find it interesting. Furthermore minor changes to the participation invites and structure of Auctioneer was made to support multiple auctions concurrently as some auctions ends up with no participants due to everyone engaging in another.
+
+\begin{verbatim}
+string soughtItem <- one_of(["hoodie", "t-shirt", "socks"]);
+...
+reflex listenForAuctionStart when: !empty(cfps) {
+    message auctionStart <- cfps[0];
+    if (list(auctionStart.contents)[0] = 'invite' and list(auctionStart.contents)[1] = soughtItem) {
+        do accept_proposal with: (message: auctionStart, contents: ["join"]);
+        targetAuction <- auctionStart.sender;
+    }  else if (list(auctionStart.contents)[0] = 'invite') {
+        ask world {
+            do sometimes_log(0.1, "[" + myself.name + "]: could not care less about " + list(auctionStart.contents)[1] + " being auctioned.");
+        }
+    }
+}
+\end{verbatim}
+
+and snippet related to receiving no responses within a auctionTimeoutTime
+
+\begin{verbatim}
+reflex handleParticipationReplies when: !auctionActive and ((!(empty(accept_proposals)) or auctionTime = auctionTimeoutTime))  {
+    loop reply over: accept_proposals {
+        string dummy <- reply.contents;	// read contents to remove from `accept_proposals`
+        participants <- participants + reply.sender;
+    }
+    
+    if (!empty(participants)) {
+        auctionActive <- true;
+        write "[" + name +  "] " + "Auction started: Selling " + auctionedItem + " with " + length(participants) + " participants.\n";
+    } else {
+        write "[" + name +  "] " + "No interested participants, cancelling auction.\n";
+        selling <- false;
+    }
+} 
+\end{verbatim}
+
+\subsubsection{Demonstration}
+
+\textbf{Use Case 1}
+In Figure \ref{fig:challenge_1_1_not_interested}, we can see that a guest has recevied information of a auction for t-shirts but the agent (e.x. Guest13) are not interested in bidding for a shirt.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{challenge_1_1_not_interested.png}
+    \caption{Guests ignoring to go to a auction as they aren't interested in the product being sold.}
+    \label{fig:challenge_1_1_not_interested}
+\end{figure}
+
+\textbf{Use Case 2}
+
+Figure \ref{fig:challenge_1_2_concurrent_auctions} shows two auctioneers commencing their auctions with different guests at the same time and that they are being held concurrently.
+
+
+\begin{figure}
+    \centering
+        \includegraphics[width=1\linewidth]{challenge_1_2_concurrent_auctions.png}
+    \caption{Concurrent auctions}
+    \label{fig:challenge_1_2_concurrent_auctions}
+\end{figure}
+
+\textbf{Use Case 3}
+
+Figure \ref{fig:challenge_1_3_cancelled_auction} shows an auction being cancelled as all guests were either busy with other auctions or busy with an auction of the same type.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{challenge_1_3_cancelled_auction.png}
+    \caption{Auctioneer 2 canceled their auction as not one responded to their invitation in time.}
+    \label{fig:challenge_1_3_cancelled_auction}
+\end{figure}
+
+
+\textbf{Use Case 4}
+
+Figure \ref{fig:challenge_1_4_picky_guests} shows a guest at the begining of the simulation which has yet to auction for anything (or anything at all for that matter) but still refusing to bid for t-shirts.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{challenge_1_4_picky_guests.png}
+    \caption{Guest1 has yet to participate in any auction or have anything else to do but still rejects to bid for a t-shirt.}
+    \label{fig:challenge_1_4_picky_guests}
+\end{figure}
