@@ -468,14 +468,8 @@ species Auctioneer skills: [moving, fipa] {
     }
     
     reflex handleSealedBidResponses when: auctionActive and (auctionType = "sealed-bid") and !(empty(accept_proposals)) {
-    	message winner;
-    	loop i from: 0 to: length(accept_proposals) {
-		    if (int(accept_proposals[i].contents) < int(accept_proposals[i + 1].contents)) {
-		    	winner <- accept_proposals[i + 1];
-		    } else {
-		    	winner <- accept_proposals[i];
-		    }
-		}
+    	list<message> bidResponders <- sort_by(accept_proposals, int(list(each.contents)[0]));
+    	message winner <- bidResponders[length(bidResponders) - 1];
     	int price <- int(list(winner.contents)[0]);
     	write "[" + name +  "] " + "Auction has ended: " + Guest(winner.sender).name + " bought " + auctionedItem + " for " + price + " at " + auctionType + " auction.\n";
     	
