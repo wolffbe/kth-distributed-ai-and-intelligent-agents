@@ -14,6 +14,8 @@ global {
 	int waterStoreNumber <- 2;
 	InformationCenter infoCenter;
 	
+	int auctionParticipationRadius <- 5;
+	
 	init {
 		// `with` allows passing a map of key-value pairs to initialize attributes- enable cache for approximately half the guests
 		create Guest number: guestNumber with: [
@@ -61,9 +63,9 @@ species Guest skills: [moving, fipa] {
 	bool isBad <- flip(0.2);
 	list<Guest> guestsToReport <- [];
 	
+	Auctioneer targetAuction <- nil;
 	string soughtItem <- one_of(["hoodie", "t-shirt", "socks"]);
 	int purchasePrice <- rnd(30, 120);
-	bool inAuction <- false;
 	
 	bool isHungry {
 		return food < 20;
@@ -71,6 +73,10 @@ species Guest skills: [moving, fipa] {
 	
 	bool isThirsty {
 		return water < 20;
+	}
+	
+	bool inAuction {
+		return targetAuction != nil;
 	}
 
 	// small chance to forget
@@ -94,10 +100,21 @@ species Guest skills: [moving, fipa] {
 	}
 	
 	reflex move {
-		// report bad guests with priority
-		if (!empty(guestsToReport)) {
+		// highest priority is going to auction
+		if (targetAuction != nil) {
+			// just keeps them in the vicinity of auction (don't want to all be on top of each other)
+			if (distance_to(self, targetAuction) > auctionParticipationRadius) {
+				do goto target: targetAuction;
+			} else {
+				do wander;
+			}
+		}
+		// middle priority is reporting bad guests
+		else if (!empty(guestsToReport)) {
 			do goto target: infoCenter;
-		} else if (isHungry() or isThirsty()) {
+		} 
+		// lowest priority is eating/drinking
+		else if (isHungry() or isThirsty()) {
 			do applyCache;
 			if (targetStore = nil) {
 				// guest is hungry/thirsty and hasn't gotten location of target store yet from InformationCenter or cache
@@ -190,17 +207,17 @@ species Guest skills: [moving, fipa] {
 		guestsToReport <- [];
 	}
 
-	// listen for announcements of auction start- engage if interested in the item
-	reflex listenForAuctionStart when: !inAuction and !empty(cfps) {
+	// listen for announcements of auction start- engage if interested in the item (only if they're not a bad guest)
+	reflex listenForAuctionStart when: !inAuction() and !empty(cfps) and !isBad {
 		message auctionStart <- cfps[0];
 		if (list(auctionStart.contents)[0] = 'invite' and list(auctionStart.contents)[1] = soughtItem) {
 			do accept_proposal with: (message: auctionStart, contents: ["join"]);
-			inAuction <- true;
+			targetAuction <- auctionStart.sender;
 		}
 	}
 	
 	// for each step of the Dutch auction, accept if your target price has been reached
-	reflex handleAuctionProposal when: inAuction and !empty(proposes) {
+	reflex handleAuctionProposal when: inAuction() and !empty(proposes) {
 		message auctionProposal <- proposes[0];
 		int price <- int(list(auctionProposal.contents)[1]);
 		if (price <= purchasePrice) {
@@ -209,12 +226,12 @@ species Guest skills: [moving, fipa] {
 	}
 	
 	// listen for the outcome of the auction (Guest is the winner, or auction ended)
-	reflex listenForAuctionEnd when: inAuction and !empty(informs) {
+	reflex listenForAuctionEnd when: inAuction() and !empty(informs) {
 		message auctionEnd <- informs[0];
 		if (list(auctionEnd.contents)[0] = 'winner') {
 			write "[" + name + "]: I just found out I'm the auction winner!\n";
 		} 
-		inAuction <- false;
+		targetAuction <- nil;
 	}
 
 	Store askForTargetStore {
@@ -233,7 +250,9 @@ species Guest skills: [moving, fipa] {
 	
 	aspect base {
 		rgb guestColor <- #green;
-		if (isHungry() and isThirsty()) {
+		if (inAuction()) {
+			guestColor <- #greenyellow;
+		} else if (isHungry() and isThirsty()) {
 			guestColor <- #red;
 		} else if (isHungry()) {
 			guestColor <- #orange;
@@ -356,43 +375,55 @@ species Store {
     }
 }
 
-species Auctioneer skills: [fipa] {
+species Auctioneer skills: [moving, fipa] {
     string auctionedItem <- one_of(["hoodie", "t-shirt", "socks"]);
     int startingPrice <- 200;
     int currentPrice <- startingPrice;
     int minimumPrice <- 100;
     bool auctionActive <- false;
     list<Guest> participants <- [];
+    int auctionStartTime <- -2;
+    
+    // move around while not in an auction
+    reflex move {
+    	if (!auctionActive) {
+    		do wander;
+    	}
+    }
 
 	// invite guests to participate in auction
-    reflex beginAuction when: (time = 10) {
+    reflex beginAuction when: !auctionActive and flip(0.005) {
+    	auctionStartTime <- int(time);
         do start_conversation to: list(Guest) protocol: 'fipa-propose' performative: 'cfp' 
            contents: ['invite', auctionedItem];
         write "Inviting guests to participate in an auction for " + auctionedItem + "\n";
     }
 
 	// if guests accept proposal to join auction, add them to participants
-    reflex handleParticipationReplies when: !auctionActive and !(empty(accept_proposals))  {
+    reflex handleParticipationReplies when: !auctionActive and time = auctionStartTime + 1 {
     	loop reply over: accept_proposals {
     		string dummy <- reply.contents;	// read contents to remove from `accept_proposals`
             participants <- participants + reply.sender;
         }
         
-        if (!empty(participants)) {
-        	auctionActive <- true;
-        	write "Auction started: Selling " + auctionedItem + " with " + length(participants) + " participants.\n";
-        } else {
+        if (empty(participants)) {
         	write "No interested participants, cancelling auction.\n";
+        	auctionStartTime <- -1;
         }
     } 
+    
+	reflex waitForGuestsToGather when: !empty(participants) and (participants max_of (location distance_to(each.location)) <= auctionParticipationRadius) 
+		and !auctionActive {
+	    auctionActive <- true;
+        write "Auction started: Selling " + auctionedItem + " with " + length(participants) + " participants.\n";
+	}
 
 	// send a new decreased proposal every 5 cycles
     reflex sendProposal when: auctionActive and int(time) mod 5 = 0 {
     	if (currentPrice < minimumPrice) {
     		do start_conversation to: participants protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
     		write "Auction has ended: minimum price exceeded.\n";
-    		auctionActive <- false;
-    		participants <- [];
+    		do resetAuction;
     		return;
     	}
     	
@@ -411,9 +442,20 @@ species Auctioneer skills: [fipa] {
     	do start_conversation to: acceptance.sender protocol: 'fipa-propose' performative: 'inform' contents: ['winner'];
     	do start_conversation to: participants - acceptance.sender protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
     	
+    	do resetAuction;
+    	
+    }
+    
+    action resetAuction {
     	auctionActive <- false;
     	participants <- [];
+    	currentPrice <- startingPrice;
+    }
+    
+    aspect base {
+    	draw square(3) color: #darkgrey;
     	
+    	draw auctionedItem color: #black at: location + {-2, 3};
     }
 }
 
@@ -424,6 +466,7 @@ experiment festivalSimulation type:gui {
 			species Guard aspect:base;
 			species InformationCenter aspect:base;
 			species Store aspect:base;
+			species Auctioneer aspect:base;
 		}
 	}
 }
