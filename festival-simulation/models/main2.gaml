@@ -44,16 +44,13 @@ global {
 	}
 	
 	reflex printGlobalMerchandise when: cycle mod 1000 = 0 {
-		write "Global remaining merchandise to auction: " + sum(Auctioneer collect each.items);
+		write "Auctions completed: " + completedAuctions;
+		write "Global remaining money to spend by guests: " + sum(Guest collect each.purse);
+		write "Global remaining items to auction: " + sum(Auctioneer collect each.items);
+		write "Global remaining money taken by auctioneers: " + sum(Auctioneer collect each.purse);
+		write "Global average revenue per auction" + sum(Auctioneer collect each.purse) / completedAuctions;
 	}
-	
-	reflex printGlobalPurse {
-		int globalMerchandise <- sum(Auctioneer collect each.items);
-		if globalMerchandise = 0 {
-			write "Global purse of all auctioneers" + sum(Auctioneer collect each.purse);
-		}
-	}
-		
+			
 	action sometimes_log(float prob, string text) {
 		if (rnd(1.0) < prob) {
 			write text;
