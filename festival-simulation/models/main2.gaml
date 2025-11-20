@@ -198,7 +198,9 @@ species Guest skills: [moving, fipa] {
 			do accept_proposal with: (message: auctionStart, contents: ["join"]);
 			inAuction <- true;
 		}  else if (list(auctionStart.contents)[0] = 'invite') {
-			write "[" + name + "]: could not care less about " + list(auctionStart.contents)[1] + " being auctioned.";
+			ask world {
+				do sometimes_log(0.1, "[" + myself.name + "]: could not care less about " + list(auctionStart.contents)[1] + " being auctioned.");
+			}
 		}
 	}
 	
@@ -359,28 +361,50 @@ species Store {
     }
 }
 
-species Auctioneer skills: [fipa] {
+species Auctioneer skills: [moving, fipa] {
     string auctionedItem <- one_of(["hoodie", "t-shirt", "socks"]);
     int startingPrice <- 200;
     int currentPrice <- startingPrice;
     int minimumPrice <- 100;
+    bool selling <- false;
     bool auctionActive <- false;
     list<Guest> participants <- [];
-    int aliveFor <- 0;
+    int auctionTime <- 0;
+    int auctionTimeoutTime <- 20;
+    float invitationRadius <- 20.0;
     
-    reflex updateTime {
-    	aliveFor <- aliveFor + 1;
+    reflex updateTime when: (selling) {
+    	auctionTime <- auctionTime + 1;
     }
+    
+    reflex walkAround {
+    	do wander;
+    }
+    
+    reflex startAuction when: (!selling and flip(0.2)) {
+    	auctionTime <- 0;
+    	selling <- true;
+    }
+
+	
 
 	// invite guests to participate in auction
-    reflex beginAuction when: (aliveFor = 10) {
-        do start_conversation to: list(Guest) protocol: 'fipa-propose' performative: 'cfp' 
-           contents: ['invite', auctionedItem];
-        write "[" + name +  "] " + "Inviting guests to participate in an auction for " + auctionedItem + "\n";
-    }
+	reflex beginAuction when: (auctionTime = 10) {
+	    list<Guest> nearbyGuests <- Guest at_distance invitationRadius;
+	    
+	    if (!empty(nearbyGuests)) {
+	        do start_conversation to: nearbyGuests protocol: 'fipa-propose' performative: 'cfp'
+	           contents: ['invite', auctionedItem];
+	        write "[" + name +  "] " + "Inviting " + length(nearbyGuests) + " nearby guests to participate in an auction for " + auctionedItem + "\n";
+	    } else {
+	    	// no one to invite, we walk around more
+	    	auctionTime <- 0;
+	        //write "[" + name +  "] " + "No guests nearby for auction\n";
+	    }
+	}
 
 	// if guests accept proposal to join auction, add them to participants
-    reflex handleParticipationReplies when: !auctionActive and ((!(empty(accept_proposals)) or aliveFor = 20))  {
+    reflex handleParticipationReplies when: !auctionActive and ((!(empty(accept_proposals)) or auctionTime = auctionTimeoutTime))  {
     	loop reply over: accept_proposals {
     		string dummy <- reply.contents;	// read contents to remove from `accept_proposals`
             participants <- participants + reply.sender;
@@ -389,18 +413,20 @@ species Auctioneer skills: [fipa] {
         if (!empty(participants)) {
         	auctionActive <- true;
         	write "[" + name +  "] " + "Auction started: Selling " + auctionedItem + " with " + length(participants) + " participants.\n";
-        } else { // dead code
+        } else {
         	write "[" + name +  "] " + "No interested participants, cancelling auction.\n";
+        	selling <- false;
         }
     } 
 
 	// send a new decreased proposal every 5 cycles
-    reflex sendProposal when: auctionActive and int(time) mod 5 = 0 {
+    reflex sendProposal when: auctionActive and auctionTime mod 5 = 0 {
     	if (currentPrice < minimumPrice) {
     		do start_conversation to: participants protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
     		write "[" + name +  "] " + "Auction has ended: minimum price exceeded.\n";
     		auctionActive <- false;
     		participants <- [];
+    		selling <- false;
     		return;
     	}
     	
@@ -420,8 +446,14 @@ species Auctioneer skills: [fipa] {
     	do start_conversation to: participants - acceptance.sender protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
     	
     	auctionActive <- false;
+    	selling <- false;
     	participants <- [];
     	
+    }
+    
+    aspect base {
+    	draw square(3) color: #darkgreen;
+    	draw auctionedItem color: #black at: location + {-2, 3};
     }
 }
 
@@ -432,6 +464,7 @@ experiment festivalSimulation type:gui {
 			species Guard aspect:base;
 			species InformationCenter aspect:base;
 			species Store aspect:base;
+			species Auctioneer aspect:base;
 		}
 	}
 }
