@@ -13,6 +13,7 @@ global {
 	int foodStoreNumber <- 2;
 	int waterStoreNumber <- 2;
 	InformationCenter infoCenter;
+	int auctions <- 3;
 	
 	int auctionParticipationRadius <- 5;
 	
@@ -31,7 +32,7 @@ global {
 			hasWater <- true;
 		}
 		create Guard;
-		create Auctioneer;
+		create Auctioneer number: auctions;
 	}
 	
 	reflex printAverageSteps when: cycle mod 500 = 0 {
@@ -210,9 +211,15 @@ species Guest skills: [moving, fipa] {
 	// listen for announcements of auction start- engage if interested in the item (only if they're not a bad guest)
 	reflex listenForAuctionStart when: !inAuction() and !empty(cfps) and !isBad {
 		message auctionStart <- cfps[0];
-		if (list(auctionStart.contents)[0] = 'invite' and list(auctionStart.contents)[1] = soughtItem) {
-			do accept_proposal with: (message: auctionStart, contents: ["join"]);
-			targetAuction <- auctionStart.sender;
+		if (list(auctionStart.contents)[0] = 'invite') {
+			if (list(auctionStart.contents)[1] = soughtItem) {
+				do accept_proposal with: (message: auctionStart, contents: ["join"]);
+				targetAuction <- auctionStart.sender;
+			} else {
+				ask world {
+					do sometimes_log(0.1, "[" + myself.name + "]: could not care less about " + list(auctionStart.contents)[1] + " being auctioned.");
+				}
+			}
 		}
 	}
 	
@@ -380,6 +387,7 @@ species Auctioneer skills: [moving, fipa] {
     int startingPrice <- 200;
     int currentPrice <- startingPrice;
     int minimumPrice <- 100;
+    bool selling <- false;
     bool auctionActive <- false;
     list<Guest> participants <- [];
     int auctionStartTime <- -2;
@@ -406,8 +414,10 @@ species Auctioneer skills: [moving, fipa] {
             participants <- participants + reply.sender;
         }
         
-        if (empty(participants)) {
-        	write "No interested participants, cancelling auction.\n";
+        if (!empty(participants)) {
+        	write "[" + name +  "] " + "Auction started: Selling " + auctionedItem + " with " + length(participants) + " participants.\n";
+        } else {
+        	write "[" + name +  "] " + "No interested participants, cancelling auction.\n";
         	auctionStartTime <- -1;
         }
     } 
@@ -422,9 +432,9 @@ species Auctioneer skills: [moving, fipa] {
     reflex sendProposal when: auctionActive and int(time) mod 5 = 0 {
     	if (currentPrice < minimumPrice) {
     		do start_conversation to: participants protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
-    		write "Auction has ended: minimum price exceeded.\n";
+    		write "[" + name +  "] " + "Auction has ended: minimum price exceeded.\n";
     		do resetAuction;
-    		return;
+			return;
     	}
     	
     	write "Auction continues: current offer = " + currentPrice + ".\n"; 
@@ -437,7 +447,7 @@ species Auctioneer skills: [moving, fipa] {
     reflex handleAcceptProposal when: auctionActive and !(empty(accept_proposals)) {
     	message acceptance <- accept_proposals[0];
     	int price <- int(list(acceptance.contents)[1]);
-    	write "Auction has ended: " + Guest(acceptance.sender).name + " bought " + auctionedItem + " for " + price + ".\n";
+    	write "[" + name +  "] " + "Auction has ended: " + Guest(acceptance.sender).name + " bought " + auctionedItem + " for " + price + ".\n";
     	
     	do start_conversation to: acceptance.sender protocol: 'fipa-propose' performative: 'inform' contents: ['winner'];
     	do start_conversation to: participants - acceptance.sender protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
@@ -448,13 +458,13 @@ species Auctioneer skills: [moving, fipa] {
     
     action resetAuction {
     	auctionActive <- false;
+    	selling <- false;
     	participants <- [];
     	currentPrice <- startingPrice;
     }
     
     aspect base {
     	draw square(3) color: #darkgrey;
-    	
     	draw auctionedItem color: #black at: location + {-2, 3};
     }
 }
@@ -470,3 +480,4 @@ experiment festivalSimulation type:gui {
 		}
 	}
 }
+
