@@ -45,6 +45,9 @@ global {
 	
 	reflex printGlobalMerchandise when: cycle mod 1000 = 0 {
 		write "Auctions completed: " + completedAuctions;
+		if (completedAuctions = 0) {
+			return;
+		}
 		write "Global remaining money to spend by guests: " + sum(Guest collect each.purse);
 		write "Global remaining items to auction: " + sum(Auctioneer collect each.items);
 		write "Global remaining money taken by auctioneers: " + sum(Auctioneer collect each.purse);
@@ -105,22 +108,22 @@ species Guest skills: [moving, fipa] {
 
 	// small chance to forget
 	reflex forget when: flip(0.01) {
-	    string forgets <- one_of(["food", "water"]);
-	    if (forgets = "food") {
-	    	if (cachedFood != nil) {
-	    		ask world {
-	    			do sometimes_log(0.1, myself.name + " decided to forget a food store.\n");
-	    		}
-	    	}
-	    	cachedFood <- nil;
-	    } else {
-	    	if (cachedWater != nil) {
-	    		ask world {
+	   string forgets <- one_of(["food", "water"]);
+	   if (forgets = "food") {
+	   	if (cachedFood != nil) {
+	   		ask world {
+	   			do sometimes_log(0.1, myself.name + " decided to forget a food store.\n");
+	   		}
+	   	}
+	   	cachedFood <- nil;
+	   } else {
+	   	if (cachedWater != nil) {
+	   		ask world {
     				do sometimes_log(0.1, myself.name + " decided to forget a drink store.\n");
 				}
 			}
-	    	cachedWater <- nil;
-	    }
+	   	cachedWater <- nil;
+	   }
 	}
 	
 	reflex move {
@@ -217,7 +220,7 @@ species Guest skills: [moving, fipa] {
 		// occasionally log for observability
 		ask world {
 			if (!empty(badGuests)) {
-			    do sometimes_log(0.05, myself.name + " has witnessed the following bad guests: " + collect(badGuests, each.name) + "\n");
+			   do sometimes_log(0.05, myself.name + " has witnessed the following bad guests: " + collect(badGuests, each.name) + "\n");
 			}
 		}
 
@@ -384,15 +387,15 @@ species InformationCenter {
 		}
 		
 		// only log for observability for new reports
-	    if (!empty(badGuests - reportedGuests)) {
-	    	write "Guard has been called to the information center.\n";
-	    }
+	   if (!empty(badGuests - reportedGuests)) {
+	   	write "Guard has been called to the information center.\n";
+	   }
 		
 		// avoid duplicates when multiple guests report same bad guests
-	    reportedGuests <- reportedGuests union badGuests;
-	    ask Guard {
-	        self.isCalled <- true;
-	    }
+	   reportedGuests <- reportedGuests union badGuests;
+	   ask Guard {
+	       self.isCalled <- true;
+	   }
 	}
 	
 	// remove arrested guest from reportedGuests
@@ -463,7 +466,7 @@ species Auctioneer skills: [moving, fipa] {
 	reflex waitForGuestsToGather when: !empty(participants) and (participants max_of (location distance_to(each.location)) <= auctionParticipationRadius) 
 		and !auctionActive 
 		and (auctionType = "dutch" and !empty(participants)) or ((auctionType = "sealed-bid" or auctionType = "vickrey") and length(participants) >= 2){
-	    auctionActive <- true;
+	   auctionActive <- true;
         write "[" + name +  "] " + "Selling " + auctionedItem + " with " + length(participants) + " participants in + " + auctionType + " auction.\n";
 	}
 
@@ -560,4 +563,3 @@ experiment festivalSimulation type:gui {
 		}
 	}
 }
-
