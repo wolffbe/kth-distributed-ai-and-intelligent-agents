@@ -1,10 +1,6 @@
 model nqueens
 
 global {
-	// 17 works
-	// 18 finishes
-	// 19 finishes quickly
-	// 20 does but in _
 	int n <- 20;
 	float cellSize <- 100 / n;  // Grid cell size for display
 
@@ -36,6 +32,8 @@ species Queen skills: [fipa] {
 	bool isSolved <- false;
 	int row <- -1;
 	int col <- -1;
+	list<int> validColumns <- [];  // Sorted by least-constraining value
+	int colIndex <- 0;  // Current position in validColumns
 
 	init {
 		row <- -1;
@@ -64,18 +62,30 @@ species Queen skills: [fipa] {
 		}
 		return true;
 	}
-	
-	bool successorPlacementExists(int _row, int _col) {
-		bool any <- false;
-		previousPositions <- previousPositions + [{_col, _row}];
-		loop c from: 0 to: n - 1 {
-			if (isValid(_row+1, c)) {
-				any <- true;
-				break;
+
+	// From some research it gets a lot "luckier" when you dont just go left to right - so lets not do that	
+	list<int> getValidColumns(int _row) {
+		// Generate column order: middle first, alternating outward
+		list<int> colOrder <- [];
+		int mid <- int(n / 2);
+		colOrder <- colOrder + [mid];
+		loop offset from: 1 to: mid {
+			if (mid + offset < n) {
+				colOrder <- colOrder + [mid + offset];
+			}
+			if (mid - offset >= 0) {
+				colOrder <- colOrder + [mid - offset];
 			}
 		}
-		previousPositions <- previousPositions - [{_col, _row}];
-		return any;
+
+		// Filter to only valid columns
+		list<int> result <- [];
+		loop c over: colOrder {
+			if (isValid(_row, c)) {
+				result <- result + [c];
+			}
+		}
+		return result;
 	}
 	
 	reflex handleMessages when: !empty(informs) {
@@ -103,50 +113,41 @@ species Queen skills: [fipa] {
 		}
 	}
 	
-	action findPlacement(int _row) {
-		row <- _row;
-		loop c from: 0 to: n - 1 {
-			if (isValid(row, c) and (successor = nil or successorPlacementExists(row, c))) {
-				col <- c;
-				if (successor != nil) {
-					do start_conversation to: [successor] protocol: 'fipa-propose' performative: 'inform' contents: ['place', row, previousPositions + [{col, row}]];
-				} else {
-					write "Position: (" + col + ", " + row + ")";
-					do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['done'];
-				}
-				return;
+	action tryPlace {
+		// goes to next possible column 
+		if (colIndex < length(validColumns)) {
+			col <- validColumns[colIndex];
+			if (successor != nil) {
+				do start_conversation to: [successor] protocol: 'fipa-propose' performative: 'inform' contents: ['place', row, previousPositions + [{col, row}]];
+			} else {
+				write "Position: (" + col + ", " + row + ")";
+				do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['done'];
 			}
-		}
-		
-		// No valid placement found
-		if (predecessor != nil) {
-			previousPositions <- [];
-			do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['cant'];
+		// or gives up
 		} else {
-			write "No solution exists!";
+			// No valid position found, backtrack
+			if (predecessor != nil) {
+				previousPositions <- [];
+				col <- -1;
+				validColumns <- [];
+				colIndex <- 0;
+				do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['cant'];
+			} else {
+				write "No solution exists!";
+			}
 		}
 	}
-	
+
+	action findPlacement(int _row) {
+		row <- _row;
+		validColumns <- getValidColumns(_row);
+		colIndex <- 0;
+		do tryPlace();
+	}
+
 	action tryNextPosition {
-		loop c from: col + 1 to: n - 1 {
-			if (col = n - 1) {
-				break;
-			}
-			if (isValid(row, c) and (successor = nil or successorPlacementExists(row, c))) {
-				col <- c;
-				do start_conversation to: [successor] protocol: 'fipa-propose' performative: 'inform' contents: ['place', row, previousPositions + [{col, row}]];
-				return;
-			}
-		}
-		
-		// No valid position found, backtrack
-		if (predecessor != nil) {
-			previousPositions <- [];
-			col <- -1;  // Reset column
-			do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['cant'];
-		} else {
-			write "No solution exists!";
-		}
+		colIndex <- colIndex + 1;
+		do tryPlace();
 	}
 	
 	// Draw queen on grid based on row and col
