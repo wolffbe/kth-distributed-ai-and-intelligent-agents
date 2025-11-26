@@ -72,18 +72,8 @@ species Guest skills: [moving] {
 	reflex forget when: flip(0.01) {
 	    string forgets <- one_of(["food", "water"]);
 	    if (forgets = "food") {
-	    	if (cachedFood != nil) {
-	    		ask world {
-	    			do sometimes_log(0.1, myself.name + " decided to forget a food store.\n");
-	    		}
-	    	}
 	    	cachedFood <- nil;
 	    } else {
-	    	if (cachedWater != nil) {
-	    		ask world {
-    				do sometimes_log(0.1, myself.name + " decided to forget a drink store.\n");
-				}
-			}
 	    	cachedWater <- nil;
 	    }
 	}
