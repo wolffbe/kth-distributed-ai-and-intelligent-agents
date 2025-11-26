@@ -16,6 +16,8 @@ global {
 	int auctions <- 3;
 	
 	int auctionParticipationRadius <- 5;
+	float witnessDistance <- 3.0;
+	int auctionCycleInterval <- 5;
 		
 	init {
 		// `with` allows passing a map of key-value pairs to initialize attributes- enable cache for approximately half the guests
@@ -36,10 +38,16 @@ global {
 	}
 	
 	reflex printAverageSteps when: cycle mod 500 = 0 {
-		float averageStepsCache <- sum(Guest where each.useCache collect each.steps) / length(Guest where each.useCache);
-		float averageStepsNoCache <- sum(Guest where !each.useCache collect each.steps) / length(Guest where !each.useCache);
-//		write "Average steps by: \n- brain: " + round(averageStepsCache) + 
-//			"\n- no brain " + round(averageStepsNoCache) + "\nat cycle: " + cycle + "\n";		
+		// guard against division by zero
+		list<Guest> cacheUsers <- Guest where each.useCache;
+		list<Guest> nonCacheUsers <- Guest where !each.useCache;
+		
+		if (!empty(cacheUsers) and !empty(nonCacheUsers)) {
+			float averageStepsCache <- sum(cacheUsers collect each.steps) / length(cacheUsers);
+			float averageStepsNoCache <- sum(nonCacheUsers collect each.steps) / length(nonCacheUsers);
+			write "Average steps by: \n- brain: " + round(averageStepsCache) + 
+				"\n- no brain " + round(averageStepsNoCache) + "\nat cycle: " + cycle + "\n";
+		}
 	}
 	
 	reflex printAuctionStats when: cycle mod 1000 = 0 {
@@ -123,14 +131,14 @@ species Guest skills: [moving, fipa] {
 	  if (forgets = "food") {
 	  	if (cachedFood != nil) {
 	  		ask world {
-//	  			do sometimes_log(0.1, myself.name + " decided to forget a food store.\n");
+	  			do sometimes_log(0.1, myself.name + " decided to forget a food store.\n");
 	  		}
 	  	}
 	  	cachedFood <- nil;
 	  } else {
 	  	if (cachedWater != nil) {
 	  		ask world {
-//    				do sometimes_log(0.1, myself.name + " decided to forget a drink store.\n");
+    				do sometimes_log(0.1, myself.name + " decided to forget a drink store.\n");
 				}
 			}
 	  	cachedWater <- nil;
@@ -138,6 +146,9 @@ species Guest skills: [moving, fipa] {
 	}
 	
 	reflex move {
+		// filter out already-arrested guests at the start to avoid control flow issues
+		guestsToReport <- guestsToReport where (!dead(each));
+		
 		// highest priority is going to auction
 		if (targetAuction != nil) {
 			// just keeps them in the vicinity of auction (don't want to all be on top of each other)
@@ -162,7 +173,7 @@ species Guest skills: [moving, fipa] {
 					
 					// occasionally log for observability
 					ask world {
-//						do sometimes_log(0.1, myself.name + " couldn't remember a nearby store, but got it from\nthe information center.\n");
+						do sometimes_log(0.1, myself.name + " couldn't remember a nearby store, but got it from\nthe information center.\n");
 					}
 					
 					steps <- steps+1;
@@ -210,28 +221,26 @@ species Guest skills: [moving, fipa] {
 		}
 		if (isHungry() and cachedFood != nil) {
 			targetStore <- cachedFood;
-			// occasionally log cache use for observability
 			ask world {
-//				do sometimes_log(0.1, myself.name + " has remembered a nearby food store.\n");
+				do sometimes_log(0.1, myself.name + " has remembered a nearby food store.\n");
 			}
 		}
 		else if (isThirsty() and cachedWater != nil) {
 			targetStore <- cachedWater;
-			// occasionally log cache use for observability
 			ask world {
-//				do sometimes_log(0.1, myself.name + " has remembered a nearby drink store.\n");
+				do sometimes_log(0.1, myself.name + " has remembered a nearby drink store.\n");
 			}
 		}
 	}
 
 	reflex witness when: !isBad {
 		// when a good guest gets close to a bad guest, report them
-		list<Guest> badGuests <- Guest where (each.isBad and distance_to(each, self) < 3.0 and !(guestsToReport contains each));
+		list<Guest> badGuests <- Guest where (each.isBad and distance_to(each, self) < witnessDistance and !(guestsToReport contains each));
 		
 		// occasionally log for observability
 		ask world {
 			if (!empty(badGuests)) {
-//			  do sometimes_log(0.05, myself.name + " has witnessed the following bad guests: " + collect(badGuests, each.name) + "\n");
+			  do sometimes_log(0.05, myself.name + " has witnessed the following bad guests: " + collect(badGuests, each.name) + "\n");
 			}
 		}
 
@@ -247,54 +256,76 @@ species Guest skills: [moving, fipa] {
 
 	// listen for announcements of auction start- engage if interested in the item (only if they're not a bad guest)
 	reflex listenForAuctionStart when: !inAuction() and !empty(cfps) and !isBad {
-		message auctionStart <- cfps[0];
-		if (list(auctionStart.contents)[0] = 'invite') {
-			if (list(auctionStart.contents)[1] = soughtItem) {
-				do accept_proposal with: (message: auctionStart, contents: ["join"]);
-				targetAuction <- auctionStart.sender;
-			} else {
-				ask world {
-					do sometimes_log(0.1, "[" + myself.name + "]: could not care less about " + list(auctionStart.contents)[1] + " being auctioned.");
+		loop auctionStart over: cfps {
+			if (list(auctionStart.contents)[0] = 'invite') {
+				if (list(auctionStart.contents)[1] = soughtItem) {
+					do accept_proposal with: (message: auctionStart, contents: ["join"]);
+					targetAuction <- auctionStart.sender;
+					break;  // only join one auction
+				} else {
+					ask world {
+						do sometimes_log(0.1, "[" + myself.name + "]: could not care less about " + list(auctionStart.contents)[1] + " being auctioned.");
+					}
 				}
 			}
 		}
 	}
 	
-	// for each step of the Dutch auction, accept if your target price has been reached
-	reflex handleDutchAuctionProposal when: inDutchAuction() and !empty(proposes) {
-		message auctionProposal <- proposes[0];
-		if (list(auctionProposal.contents)[0] = 'offer') {
-			int price <- int(list(auctionProposal.contents)[1]);
-			if (price <= purchasePrice) {
-				do accept_proposal with: (message: auctionProposal, contents: ["accept", price]);
+	reflex handleAuctionProposal when: inAuction() and !empty(proposes) {
+		loop auctionProposal over: proposes {
+			// Only process proposals from our current auctioneer
+			if (auctionProposal.sender != targetAuction) {
+				continue;
 			}
-		}
-	}
-	
-	reflex handleSealedBidAuctionProposal when: (inSealedBidAuction() or inVickreyAuction()) and !empty(proposes) {
-		message auction <- proposes[0];
-		if (list(auction.contents)[0] = 'bidRequest') {
-			do accept_proposal with: (message: auction, contents: [purchasePrice]);
-			write "[" + name + "]: (thinking) I'm going to bid " + purchasePrice + ".\n"; 
+			
+			list contents <- list(auctionProposal.contents);
+			
+			// Dutch auction: offer with price
+			if (contents[0] = 'offer') {
+				int price <- int(contents[1]);
+				if (price <= purchasePrice) {
+					do accept_proposal with: (message: auctionProposal, contents: ["accept", price]);
+				}
+			}
+			// Sealed-bid / Vickrey auction: bid request
+			else if (contents[0] = 'bidRequest') {
+				do accept_proposal with: (message: auctionProposal, contents: [purchasePrice]);
+				write "[" + name + "]: (thinking) I'm going to bid " + purchasePrice + ".\n"; 
+			}
 		}
 	}
 	
 	// listen for the outcome of the auction (Guest is the winner, or auction ended)
+	// Only process messages from the auctioneer we're currently participating with
 	reflex listenForAuctionEnd when: inAuction() and !empty(informs) {
-		message auctionEnd <- informs[0];
-		if (list(auctionEnd.contents)[0] = 'winner') {
-			write "[" + name + "]: I just found out I'm the auction winner!\n";
-			if (inDutchAuction()) {
-				expenditures[0] <- expenditures[0] + purchasePrice;
-			} else if (inSealedBidAuction()) {
-				expenditures[1] <- expenditures[1] + purchasePrice;
-			} else {
-				expenditures[2] <- expenditures[2] + purchasePrice;
+		loop auctionEnd over: informs {
+			// Only process messages from our current auctioneer
+			if (auctionEnd.sender != targetAuction) {
+				continue;
+			}
+			
+			if (list(auctionEnd.contents)[0] = 'winner') {
+				// Message format: ['winner', auctionType, pricePaid]
+				string wonAuctionType <- string(list(auctionEnd.contents)[1]);
+				int pricePaid <- int(list(auctionEnd.contents)[2]);
+				
+				write "[" + name + "]: I won the " + wonAuctionType + " auction and paid " + pricePaid + "!\n";
+				
+				if (wonAuctionType = "dutch") {
+					expenditures[0] <- expenditures[0] + pricePaid;
+				} else if (wonAuctionType = "sealed-bid") {
+					expenditures[1] <- expenditures[1] + pricePaid;
+				} else {
+					expenditures[2] <- expenditures[2] + pricePaid;
+				}
+				
+				targetAuction <- nil;
+				purchasePrice <- rnd(30, 120);	// randomize purchase price each round so not same guest always buying
+			} else if (list(auctionEnd.contents)[0] = 'stop') {
+				targetAuction <- nil;
+				purchasePrice <- rnd(30, 120);
 			}
 		}
-		
-		targetAuction <- nil;
-		purchasePrice <- rnd(30, 120);	// randomize purchase price each round so not same guest always buying
 	}
 
 	Store askForTargetStore {
@@ -337,6 +368,9 @@ species Guard skills: [moving] {
 	list<Guest> targets <- [];
 	
 	reflex move {
+		// filter out any dead targets first
+		targets <- targets where (!dead(each));
+		
 		// prioritise handling existing bad guests over getting new reports
 		if (!empty(targets)) {
 			Guest target <- targets[0];
@@ -353,13 +387,21 @@ species Guard skills: [moving] {
 	
 	reflex getReports when: distance_to(self, infoCenter) < 1.0 {
 		ask InformationCenter {
-			myself.targets <- union(myself.targets, self.reportedGuests);
+			// filter out dead guests when picking up reports
+			list<Guest> aliveReported <- self.reportedGuests where (!dead(each));
+			myself.targets <- union(myself.targets, aliveReported);
 		}
 		isCalled <- false;
 	}
 	
 	action arrest(Guest target) {
-//		write target.name + " has been arrested by the guard.\n" ;
+		// safety check in case target died between distance check and arrest
+		if (dead(target)) {
+			targets >> target;
+			return;
+		}
+		
+		write target.name + " has been arrested by the guard.\n";
 		ask target {
 			do die;
 		}
@@ -401,12 +443,12 @@ species InformationCenter {
 		
 		list<Guest> newBadGuests <- badGuests - reportedGuests;
 		if (!empty(newBadGuests)) {
-//			write "The following bad guests have been reported: " + collect(newBadGuests, each.name) + "\n";
+			write "The following bad guests have been reported: " + collect(newBadGuests, each.name) + "\n";
 		}
 		
 		// only log for observability for new reports
 	  if (!empty(badGuests - reportedGuests)) {
-//	  	write "Guard has been called to the information center.\n";
+	  	write "Guard has been called to the information center.\n";
 	  }
 		
 		// avoid duplicates when multiple guests report same bad guests
@@ -449,10 +491,12 @@ species Auctioneer skills: [moving, fipa] {
     int auctionStartTime <- -2;
     list<int> revenues <- [0, 0, 0];	// revenue in [dutch, sealed-bid, vickrey]
     list<int> auctionCounts <- [0, 0, 0];	// number of auctions of type [dutch, sealed-bid, vickrey]
+    bool bidsRequested <- false;	// flag to prevent repeated bid requests
+    int bidRequestTime <- -1;		// timestamp when bids were requested (for timeout)
     
-    // move around while not in an auction
+    // move around while not in an auction and not waiting for participants to gather
     reflex move {
-    	if (!auctionActive) {
+    	if (!auctionActive and empty(participants)) {
     		do wander;
     	}
     }
@@ -480,46 +524,85 @@ species Auctioneer skills: [moving, fipa] {
         }
     }
     
-	reflex waitForGuestsToGather when: !empty(participants) and (participants max_of (location distance_to(each.location)) <= auctionParticipationRadius) 
-		and !auctionActive 
-		and (auctionType = "dutch" and !empty(participants)) or ((auctionType = "sealed-bid" or auctionType = "vickrey") and length(participants) >= 2){
-	  auctionActive <- true;
-        write "[" + name +  "] " + "Selling " + auctionedItem + " with " + length(participants) + " participants in + " + auctionType + " auction.\n";
-	}
-	
-	reflex rejectLateJoiners when: auctionActive and !empty(accept_proposals) {
-		loop reply over: accept_proposals {
-			if (list(reply.contents)[0] = "join") {
-				do start_conversation to: reply.sender protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
-			}
+	reflex waitForGuestsToGather when: !auctionActive and !empty(participants) {
+		// Remove any dead participants first
+		participants <- participants where (!dead(each));
+		
+		// Check if we still have enough participants
+		bool hasEnoughParticipants <- (auctionType = "dutch" and !empty(participants)) or 
+			((auctionType = "sealed-bid" or auctionType = "vickrey") and length(participants) >= 2);
+		
+		if (!hasEnoughParticipants) {
+			write "[" + name + "] " + "Not enough participants remaining, cancelling auction.\n";
+			do resetAuction;
+			return;
+		}
+		
+		// Check if all participants have gathered
+		bool allGathered <- (participants max_of (location distance_to(each.location))) <= auctionParticipationRadius;
+		
+		if (allGathered) {
+			auctionActive <- true;
+			write "[" + name + "] " + "Starting " + auctionType + " auction for " + auctionedItem + " with " + length(participants) + " participants.\n";
 		}
 	}
-
+	
 	// send a new decreased proposal every 5 cycles
-    reflex sendDutchProposal when: auctionActive and auctionType = "dutch" and int(time) mod 5 = 0 {
+    reflex sendDutchProposal when: auctionActive and auctionType = "dutch" and int(time) mod auctionCycleInterval = 0 {
+    	participants <- participants where (!dead(each));
+    	
+    	if (empty(participants)) {
+    		write "[" + name + "] " + "Dutch auction ended: all participants left.\n";
+    		do resetAuction;
+    		return;
+    	}
+    	
     	if (currentPrice < minimumPrice) {
-    		do start_conversation to: participants protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
+    		do start_conversation to: participants protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
     		write "[" + name +  "] " + "Dutch auction has ended: minimum price exceeded.\n";
     		do resetAuction;
 			return;
     	}
     	
     	write "Auction continues: current offer = " + currentPrice + ".\n"; 
-        do start_conversation to: participants protocol: 'fipa_propose' performative: 'propose' contents: ['offer', currentPrice];
+        do start_conversation to: participants protocol: 'fipa-propose' performative: 'propose' contents: ['offer', currentPrice];
         
         currentPrice <- currentPrice - rnd(5, 15);
     }
     
-    reflex requestSealedBids when: auctionActive and (auctionType = "sealed-bid" or auctionType = "vickrey") and int(time) mod 5 = 0 {
-    	do start_conversation to: participants protocol: 'fipa_propose' performative: 'propose' contents: ['bidRequest'];
+    reflex requestSealedBids when: auctionActive and (auctionType = "sealed-bid" or auctionType = "vickrey") and !bidsRequested {
+    	participants <- participants where (!dead(each));
+    	
+    	if (length(participants) < 2) {
+    		write "[" + name + "] " + auctionType + " auction ended: not enough participants remaining.\n";
+    		do start_conversation to: participants protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
+    		do resetAuction;
+    		return;
+    	}
+    	
+    	do start_conversation to: participants protocol: 'fipa-propose' performative: 'propose' contents: ['bidRequest'];
     	write "[" + name +  "] " + "Requesting sealed bids!\n";
+    	bidsRequested <- true;
+    	bidRequestTime <- int(time);
+    }
+    
+    // timeout for sealed-bid auctions if no bids received after 10 cycles
+    reflex sealedBidTimeout when: auctionActive and bidsRequested and (auctionType = "sealed-bid" or auctionType = "vickrey") and (int(time) - bidRequestTime > 10) {
+    	write "[" + name + "] " + auctionType + " auction timed out waiting for bids.\n";
+    	do start_conversation to: participants protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
+    	do resetAuction;
     }
     
     // once a guest has accepted a given proposal, end the auction
     reflex handleAcceptProposal when: auctionActive and auctionType = "dutch" and !(empty(accept_proposals)) {
     	list<message> validAccepts <- [];
     	loop reply over: accept_proposals {
-    		if (list(reply.contents)[0] = "accept" and (participants contains reply.sender)) {
+    		// reject late joiners
+    		if (list(reply.contents)[0] = "join") {
+    			do start_conversation to: [reply.sender] protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
+    		}
+    		// process valid accepts
+    		else if (list(reply.contents)[0] = "accept" and (participants contains reply.sender) and !dead(Guest(reply.sender))) {
     			validAccepts <- validAccepts + reply;
     		}
         }
@@ -534,8 +617,9 @@ species Auctioneer skills: [moving, fipa] {
     	
     	do addToRevenue(price);
     	
-    	do start_conversation to: acceptance.sender protocol: 'fipa-propose' performative: 'inform' contents: ['winner'];
-    	do start_conversation to: participants - acceptance.sender protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
+    	// send winner message with auction type and price paid
+    	do start_conversation to: [acceptance.sender] protocol: 'fipa-propose' performative: 'inform' contents: ['winner', 'dutch', price];
+    	do start_conversation to: participants - acceptance.sender protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
     	
     	do resetAuction;
     }
@@ -543,7 +627,12 @@ species Auctioneer skills: [moving, fipa] {
     reflex handleSealedBids when: auctionActive and !(empty(accept_proposals)) and auctionType = "sealed-bid" {
     	list<message> validBids <- [];
     	loop reply over: accept_proposals {
-    		if (length(list(reply.contents)) = 1 and (participants contains reply.sender)) {
+    		// reject late joiners
+    		if (length(list(reply.contents)) > 0 and list(reply.contents)[0] = "join") {
+    			do start_conversation to: [reply.sender] protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
+    		}
+    		// process valid bids (content is a single int - the bid amount)
+    		else if (length(list(reply.contents)) = 1 and (participants contains reply.sender) and !dead(Guest(reply.sender))) {
     			validBids <- validBids + reply;
     		}
         }
@@ -559,8 +648,9 @@ species Auctioneer skills: [moving, fipa] {
     	
     	do addToRevenue(price);
     	
-    	do start_conversation to: winner.sender protocol: 'fipa-propose' performative: 'inform' contents: ['winner'];
-    	do start_conversation to: participants - winner.sender protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
+    	// send winner message with auction type and price paid
+    	do start_conversation to: [winner.sender] protocol: 'fipa-propose' performative: 'inform' contents: ['winner', 'sealed-bid', price];
+    	do start_conversation to: participants - winner.sender protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
 
     	do resetAuction;
     }
@@ -568,7 +658,10 @@ species Auctioneer skills: [moving, fipa] {
     reflex handleVickrey when: auctionActive and !(empty(accept_proposals)) and auctionType = "vickrey" {
     	list<message> validBids <- [];
     	loop reply over: accept_proposals {
-    		if (length(list(reply.contents)) = 1 and (participants contains reply.sender)) {
+    		if (length(list(reply.contents)) > 0 and list(reply.contents)[0] = "join") {
+    			do start_conversation to: [reply.sender] protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
+    		}
+    		else if (length(list(reply.contents)) = 1 and (participants contains reply.sender) and !dead(Guest(reply.sender))) {
     			validBids <- validBids + reply;
     		}
         }
@@ -586,8 +679,9 @@ species Auctioneer skills: [moving, fipa] {
     	
     	do addToRevenue(payingPrice);
     	
-    	do start_conversation to: winner.sender protocol: 'fipa-propose' performative: 'inform' contents: ['winner'];
-    	do start_conversation to: participants - winner.sender protocol: 'fipa_propose' performative: 'inform' contents: ['stop'];
+    	// send winner message with auction type and price paid
+    	do start_conversation to: [winner.sender] protocol: 'fipa-propose' performative: 'inform' contents: ['winner', 'vickrey', payingPrice];
+    	do start_conversation to: participants - winner.sender protocol: 'fipa-propose' performative: 'inform' contents: ['stop'];
 
     	do resetAuction;
     }
@@ -596,6 +690,8 @@ species Auctioneer skills: [moving, fipa] {
     	auctionActive <- false;
     	participants <- [];
     	currentPrice <- startingPrice;
+    	bidsRequested <- false;
+    	bidRequestTime <- -1;
     	
     	// change item and auction type each time
     	auctionedItem <- one_of(["hoodie", "t-shirt", "socks"]);
@@ -633,4 +729,3 @@ experiment festivalSimulation type:gui {
 		}
 	}
 }
-
