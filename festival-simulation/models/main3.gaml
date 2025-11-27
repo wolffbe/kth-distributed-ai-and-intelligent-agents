@@ -683,10 +683,13 @@ species Auctioneer skills: [moving, fipa] {
 
 	// invite guests to participate in auction
     reflex beginAuction when: !auctionActive and flip(0.005) {
-    	auctionStartTime <- int(time);
-        do start_conversation to: list(Guest) protocol: 'fipa-propose' performative: 'cfp' 
-           contents: ['invite', auctionedItem, auctionType];
-        write "[" + name +  "] " + "Inviting guests to participate in a " + auctionType + " auction for " + auctionedItem + "\n";
+    	list<Guest> possibleParticipants <- list(Guest where (each.targetAuction = nil));
+    	if (!empty(possibleParticipants)) {
+    		auctionStartTime <- int(time);
+	        do start_conversation to: possibleParticipants protocol: 'fipa-propose' performative: 'cfp' 
+	           contents: ['invite', auctionedItem, auctionType];
+	        write "[" + name +  "] " + "Inviting guests to participate in a " + auctionType + " auction for " + auctionedItem + "\n";
+    	}
     }
 
 	// if guests accept proposal to join auction, add them to participants
