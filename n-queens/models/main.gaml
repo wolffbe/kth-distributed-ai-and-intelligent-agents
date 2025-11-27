@@ -15,9 +15,7 @@ global {
 				queens[i].successor <- queens[i + 1];
 			}
 		}
-	}
-	
-	reflex kickOff when: cycle = 10 {
+		
 		Queen firstQueen <- Queen[0];
 		ask firstQueen {
 			do findPlacement(0);
@@ -29,33 +27,27 @@ species Queen skills: [fipa] {
 	Queen predecessor <- nil;
 	Queen successor <- nil;
 	list<point> previousPositions <- [];
-	bool isSolved <- false;
 	int row <- -1;
 	int col <- -1;
-	list<int> validColumns <- [];  // Sorted by least-constraining value
-	int colIndex <- 0;  // Current position in validColumns
-
-	init {
-		row <- -1;
-		col <- -1;
-	}
+	list<int> validColumns <- [];
+	int colIndex <- 0;  // current index of valid
+	
+	int solutions <- 0; // only used by Q-0
 	
 	bool isValid(int _row, int _col) {
 		loop pos over: previousPositions {
 			int otherCol <- int(pos.x);
 			int otherRow <- int(pos.y);
 			
-			// Same row
 			if (otherRow = _row) {
 				return false;
 			}
-			
-			// Same column
+
 			if (otherCol = _col) {
 				return false;
 			}
 			
-			// Diagonal check
+			// Diagonal
 			if (abs(otherCol - _col) = abs(otherRow - _row)) {
 				return false;
 			}
@@ -101,14 +93,20 @@ species Queen skills: [fipa] {
 				do tryNextPosition();
 			}
 			else if (msgType = "done") {
-				write "[" + name + "] Solution found!";
-				isSolved <- true;
+				list<point> result <- list<point>(list(msg.contents)[1]) + [{col,row}];
 				if (predecessor != nil) {
-					do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['done'];
+					do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['done', result];
 				} else {
-					write "Found solution :)";
+					// Entire stack
+					write "Found solution: ";
+					loop queen over: result {
+						write "    " + queen;
+					}
+					solutions <- solutions + 1;
+					// Keep looking :)
+					// do tryNextPosition();
 				}
-				write "Position: (" + col + ", " + row + ")";
+				//write "Position: (" + col + ", " + row + ")";
 			}
 		}
 	}
@@ -120,8 +118,10 @@ species Queen skills: [fipa] {
 			if (successor != nil) {
 				do start_conversation to: [successor] protocol: 'fipa-propose' performative: 'inform' contents: ['place', row, previousPositions + [{col, row}]];
 			} else {
-				write "Position: (" + col + ", " + row + ")";
-				do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['done'];
+				//write "Position: (" + col + ", " + row + ")";
+				do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['done', [{col,row}]];
+				// Keep looking!
+				do tryNextPosition();
 			}
 		// or gives up
 		} else {
@@ -133,7 +133,7 @@ species Queen skills: [fipa] {
 				colIndex <- 0;
 				do start_conversation to: [predecessor] protocol: 'fipa-propose' performative: 'inform' contents: ['cant'];
 			} else {
-				write "No solution exists!";
+				write "No more solution exists! Found: " + solutions;
 			}
 		}
 	}
