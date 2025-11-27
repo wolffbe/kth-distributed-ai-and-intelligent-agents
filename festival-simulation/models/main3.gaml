@@ -12,13 +12,14 @@ global {
 	int guestNumber <- 20;
 	int foodStoreNumber <- 2;
 	int waterStoreNumber <- 2;
-	int stageNumber <- 3;
 	InformationCenter infoCenter;
-	int auctions <- 3;
 	
+	int auctions <- 3;
 	int auctionParticipationRadius <- 5;
 	float witnessDistance <- 3.0;
 	int auctionCycleInterval <- 5;
+	
+	int stageNumber <- 3;
 	int stageRadius <- 3;
 		
 	init {
@@ -38,6 +39,7 @@ global {
 		create Guard;
 		create Auctioneer number: auctions;
 		create Stage number: stageNumber;
+		create ShowOrganizer;
 	}
 	
 	reflex printAverageSteps when: cycle mod 500 = 0 {
@@ -107,12 +109,15 @@ species Guest skills: [moving, fipa] {
 	float lightShowPref <- rnd(0.0, 1.0);
 	float speakerPref <- rnd(0.0, 1.0);
 	float musicStylePref <- rnd(0.0, 1.0);
+	float crowdMassPref <- rnd(0.0, 1.0);
 	
 	// stage-related state
 	Stage targetStage <- nil;
 	bool waitingForStageInfo <- false;
+	bool waitingForBestStage <- false;
 	map<Stage, list<float>> stageAttributes <- []; // stores received stage info
-	int stageInfoRequestTime <- -1;
+	int showStartTime <- -1;
+	int showDuration <- -1;
 	
 	
 	bool isHungry {
@@ -139,41 +144,8 @@ species Guest skills: [moving, fipa] {
 		return targetAuction != nil and targetAuction.auctionType = "vickrey";
 	}
 	
-	bool atStage {
-		return targetStage != nil and distance_to(self, targetStage) <= stageRadius;
-	}
-	
-	bool goingToStage {
+	bool atShow {
 		return targetStage != nil;
-	}
-	
-	// calculate utility for a stage based on guest preferences and stage attributes
-	float calculateUtility(list<float> attrs) {
-		// attrs: [lightShow, speaker, musicStyle]
-		return lightShowPref * attrs[0] + speakerPref * attrs[1] + musicStylePref * attrs[2];
-	}
-	
-	// select the best stage based on utility
-	action selectBestStage {
-		Stage bestStage <- nil;
-		float bestUtility <- -1.0;
-		
-		loop stage over: stageAttributes.keys {
-			float utility <- calculateUtility(stageAttributes[stage]);
-			if (utility > bestUtility) {
-				bestUtility <- utility;
-				bestStage <- stage;
-			}
-		}
-		
-		if (bestStage != nil) {
-			targetStage <- bestStage;
-			write "[" + name + "]: Selected " + bestStage.name + " with utility " + bestUtility + "\n";
-		}
-		
-		// clear the collected info for next time
-		stageAttributes <- [];
-		waitingForStageInfo <- false;
 	}
 
 	// small chance to forget
@@ -200,10 +172,16 @@ species Guest skills: [moving, fipa] {
 		// filter out already-arrested guests at the start to avoid control flow issues
 		guestsToReport <- guestsToReport where (!dead(each));
 		
-		// highest priority is going to auction
-		if (targetAuction != nil) {
-			// leave stage if we were at one
-			targetStage <- nil;
+		// highest priotity is going to show
+		if (targetStage != nil ) {
+			if (distance_to(self, targetStage) <= stageRadius) {
+				do wander;
+			} else {
+				do goto target: targetStage;
+			}
+		}
+		// second priority is going to auction
+		else if (targetAuction != nil) {
 			// just keeps them in the vicinity of auction (don't want to all be on top of each other)
 			if (distance_to(self, targetAuction) > auctionParticipationRadius) {
 				do goto target: targetAuction;
@@ -211,15 +189,12 @@ species Guest skills: [moving, fipa] {
 				do wander;
 			}
 		}
-		// second priority is reporting bad guests
+		// third priority is reporting bad guests
 		else if (!empty(guestsToReport)) {
 			do goto target: infoCenter;
 		} 
-		// third priority is eating/drinking
+		// fourth priority is eating/drinking
 		else if (isHungry() or isThirsty()) {
-			// leave stage if we were at one
-			targetStage <- nil;
-			
 			do applyCache;
 			if (targetStore = nil) {
 				// guest is hungry/thirsty and hasn't gotten location of target store yet from InformationCenter or cache
@@ -244,19 +219,6 @@ species Guest skills: [moving, fipa] {
 				steps <- steps+1;
 				do goto target: targetStore;
 			}
-		}
-		// fourth priority is going to/staying at a stage
-		else if (goingToStage()) {
-			if (atStage()) {
-				do wander;
-			} else {
-				// traveling to stage
-				do goto target: targetStage;
-			}
-		}
-		// if nothing else to do and not waiting for stage info, query stages
-		else if (!waitingForStageInfo and !isBad) {
-			do queryStages;
 		}
 		else {
 			// waiting for stage info or just wandering
@@ -401,18 +363,9 @@ species Guest skills: [moving, fipa] {
 		}
 	}
 	
-	// query all stages for their attributes via FIPA
-	action queryStages {
-		waitingForStageInfo <- true;
-		stageInfoRequestTime <- int(time);
-		stageAttributes <- [];
-		
-		do start_conversation to: list(Stage) protocol: 'fipa-request' performative: 'request' 
-			contents: ['getAttributes'];
-		
-		ask world {
-			do sometimes_log(0.1, "[" + myself.name + "]: Querying stages for their attributes.\n");
-		}
+	// check if there are upcoming shows every 20 cycles
+	reflex queryStages when: !waitingForStageInfo and targetStage = nil and !isBad and cycle mod 20 = 0 {
+		do queryStages;
 	}
 	
 	// handle stage info responses
@@ -425,30 +378,70 @@ species Guest skills: [moving, fipa] {
 				float musicStyle <- float(list(info.contents)[3]);
 				
 				stageAttributes[sender] <- [lightShow, speaker, musicStyle];
+				waitingForStageInfo <- false;
+			} 
+			// no show scheduled right now
+			else if (list(info.contents)[0] = 'none') {
+				waitingForStageInfo <- false;
+				return;
 			}
 		}
 		
-		// once we have info from all stages, select the best one
+		// if here, there are upcoming shows
+		// once we have info from all stages, select the best one and send to ShowOrganizer with crowdMassPref
 		if (length(stageAttributes) = length(Stage)) {
-			do selectBestStage;
+			map<Stage, float> stageUtilities <- getStageUtilities();
+			do start_conversation to: list(ShowOrganizer) protocol: 'fipa-propose' performative: 'inform' 
+	           contents: ['stageChoice', stageUtilities, crowdMassPref];
+	        waitingForStageInfo <- false;
+	        waitingForBestStage <- true;
+	        stageAttributes <- [];
+			
 		}
 	}
 	
-	// timeout for stage info requests
-	reflex stageInfoTimeout when: waitingForStageInfo and (int(time) - stageInfoRequestTime > 5) {
-		// if we got at least one response, select from what we have
-		if (!empty(stageAttributes)) {
-			do selectBestStage;
-		} else {
-			// no responses, just stop waiting
-			waitingForStageInfo <- false;
-		}
+	reflex handleShowAppointment when: waitingForBestStage and !empty(informs) {
+		loop msg over: informs {
+	        if (list(msg.contents)[0] = 'assignedStage') {
+	            Stage assignedStage <- Stage(list(msg.contents)[1]);
+	            targetStage <- assignedStage;
+	            showDuration <- int(list(msg.contents)[2]);
+	            showStartTime <- int(time);
+	        }
+    	}
+    	
+    	waitingForBestStage <- false;
 	}
 	
-	// occasionally leave stage to find a new one (variety seeking)
-	reflex leaveStage when: atStage() and flip(0.005) {
-		write "[" + name + "]: Getting bored at " + targetStage.name + ", looking for a new stage.\n";
-		targetStage <- nil;
+	reflex leaveShow when: targetStage != nil and showStartTime > -1 and 
+                       int(time) - showStartTime > showDuration {
+	    write "[" + name + "]: Show ended, leaving " + targetStage.name + "\n";
+	    targetStage <- nil;
+	    showStartTime <- -1;
+	    showDuration <- -1;
+	}
+	
+	// query all stages for their attributes via FIPA
+	action queryStages {
+		waitingForStageInfo <- true;
+	
+		do start_conversation to: list(Stage) protocol: 'fipa-request' performative: 'request' 
+			contents: ['getAttributes'];
+	}
+
+	map<Stage, float> getStageUtilities {
+		map<Stage, float> res <- [];
+		loop stage over: stageAttributes.keys {
+			float utility <- calculateUtility(stageAttributes[stage]);
+			res[stage] <- utility;
+		}
+		return res;
+	}
+	
+	// calculate utility for a stage based on guest preferences and stage attributes
+	float calculateUtility(list<float> attrs) {
+		// attrs: [lightShow, speaker, musicStyle]
+		return lightShowPref * attrs[0] + speakerPref * attrs[1] + musicStylePref * attrs[2];
 	}
 
 	Store askForTargetStore {
@@ -467,7 +460,9 @@ species Guest skills: [moving, fipa] {
 	
 	aspect base {
 		rgb guestColor <- #green;
-		if (inAuction()) {
+		if (atShow()) {
+			guestColor <- #mediumaquamarine;
+		} else if (inAuction()) {
 			guestColor <- #greenyellow;
 		} else if (isHungry() and isThirsty()) {
 			guestColor <- #red;
@@ -601,63 +596,6 @@ species Store {
         draw triangle(2) color: (self.hasFood ? #darkgoldenrod : #darkblue);
         draw self.hasFood ? "food" : "water" color: #black at: location + {-1, 2};
     }
-}
-
-species Stage skills: [fipa] {
-	float lightShow <- rnd(0.0, 1.0);
-	float speaker <- rnd(0.0, 1.0);
-	float musicStyle <- rnd(0.0, 1.0);
-	
-	int actDuration <- rnd(100, 300);  // cycles per act
-	int actStartTime <- 0;
-	string currentAct <- "";
-	list<string> allActs <- ["ABBA", "Roxette", "Ace of Base", "Zara Larsson", "Avicii"];
-	
-	init {
-	    do pickNewAct;
-	}
-	
-	action pickNewAct {
-	    list<string> takenActs <- (Stage - self) collect each.currentAct;
-	    list<string> availableActs <- allActs - takenActs;
-	    
-	    if (!empty(availableActs)) {
-	        currentAct <- one_of(availableActs);
-	    } else {
-	        currentAct <- one_of(allActs);
-	    }
-	}
-	
-	reflex changeAct when: int(time) - actStartTime > actDuration {
-		actStartTime <- int(time);
-		actDuration <- rnd(100, 300);
-		do pickNewAct;
-		
-		lightShow <- rnd(0.0, 1.0);
-		speaker <- rnd(0.0, 1.0);
-		musicStyle <- rnd(0.0, 1.0);
-		
-		write "[" + name + "]: New act starting - " + currentAct + 
-			" (Light: " + (round(lightShow * 100) / 100) + 
-			", Sound: " + (round(speaker * 100) / 100) + 
-			", Style: " + (round(musicStyle * 100) / 100) + ")\n";
-	}
-	
-	// respond to attribute requests from guests
-	reflex handleAttributeRequests when: !empty(requests) {
-		loop req over: requests {
-			if (list(req.contents)[0] = 'getAttributes') {
-				do start_conversation to: req.sender protocol: 'fipa-request' performative: 'inform'
-					contents: ['stageInfo', lightShow, speaker, musicStyle];
-			}
-		}
-	}
-	
-	aspect base {
-		draw square(4) color: #purple;
-		draw currentAct color: #black at: location + {-2, -3};
-		draw name color: #black at: location + {-2, 4};
-	}
 }
 
 species Auctioneer skills: [moving, fipa] {
@@ -896,6 +834,254 @@ species Auctioneer skills: [moving, fipa] {
     	draw "selling " + auctionedItem + " at " color: #black at: location + {-4, 3};
     	draw auctionType + " auction" color: #black at: location + {-4, 5};
     }
+}
+
+species Stage skills: [fipa] {
+	float lightShow <- rnd(0.0, 1.0);
+	float speaker <- rnd(0.0, 1.0);
+	float musicStyle <- rnd(0.0, 1.0);
+	
+	string currentAct <- "";
+	list<string> allActs <- ["ABBA", "Roxette", "Ace of Base", "Zara Larsson", "Avicii"];
+	bool upcomingShow <- false;
+	
+	action setupAct {
+		list<string> takenActs <- (Stage - self) collect each.currentAct;
+	    list<string> availableActs <- allActs - takenActs;
+	    
+	    if (!empty(availableActs)) {
+	        currentAct <- one_of(availableActs);
+	    } else {
+	        currentAct <- one_of(allActs);
+	    }
+	    
+	    lightShow <- rnd(0.0, 1.0);
+		speaker <- rnd(0.0, 1.0);
+		musicStyle <- rnd(0.0, 1.0);
+		
+		upcomingShow <- true;
+	}
+	
+	// respond to attribute requests from guests
+	reflex handleAttributeRequests when: !empty(requests) {
+		loop req over: requests {
+			// from ShowOrganizer telling them to set up for next round of shows
+			if (list(req.contents)[0] = 'setup') {
+				do setupAct;
+			}
+			
+			if (list(req.contents)[0] = 'getAttributes') {
+				if (upcomingShow) {
+					do start_conversation to: req.sender protocol: 'fipa-request' performative: 'inform'
+						contents: ['stageInfo', lightShow, speaker, musicStyle];
+				} else {
+					do start_conversation to: req.sender protocol: 'fipa-request' performative: 'inform'
+						contents: ['none'];
+				}
+			}
+			
+			// clear when shows start
+	        if (list(req.contents)[0] = 'clearShow') {
+	            upcomingShow <- false;
+	        }
+		}
+	}
+	
+	aspect base {
+		draw square(4) color: #purple;
+		draw currentAct color: #black at: location + {-2, -3};
+		draw name color: #black at: location + {-2, 4};
+	}
+}
+
+species ShowOrganizer skills: [fipa] {
+	bool showsActive <- false;
+    map<Guest, map<Stage, float>> guestStageUtilities <- [];
+    map<Guest, float> guestCrowdPrefs <- [];
+    map<Guest, Stage> finalAssignments <- [];
+    int showDuration <- -1;
+    int showStartTime <- -1;
+	
+	reflex startShows when: !showsActive and flip(0.005) {
+		showsActive <- true;	// not strictly started yet, but process has begun
+		do start_conversation to: list(Stage) protocol: 'fipa-propose' performative: 'request' contents: ['setup'];
+		write "[ShowOrganizer]Shows will be starting soon.\n";
+	}
+    
+    reflex collectGuestPreferences when: showsActive and !empty(informs) {
+        loop msg over: informs {
+            if (list(msg.contents)[0] = 'stageChoice') {
+                Guest sender <- Guest(msg.sender);
+                map<Stage, float> utilities <- map<Stage, float>(list(msg.contents)[1]);
+                float crowdPref <- float(list(msg.contents)[2]);
+                
+                guestStageUtilities[sender] <- utilities;
+                guestCrowdPrefs[sender] <- crowdPref;
+            }
+        }
+        
+        do optimizeGlobalUtility;
+    }
+    
+    action optimizeGlobalUtility {
+        write "\n========== GLOBAL UTILITY OPTIMIZATION ==========\n";
+        
+        list<Guest> guests <- guestStageUtilities.keys;
+        list<Stage> stages <- list(Stage);
+        
+        // initially, have each guest picking their own best
+        map<Guest, Stage> currentAssignment <- [];
+        loop guest over: guests {
+            Stage bestStage <- nil;
+            float bestUtility <- -1.0;
+            
+            loop stage over: guestStageUtilities[guest].keys {
+                float utility <- guestStageUtilities[guest][stage];
+                if (utility > bestUtility) {
+                    bestUtility <- utility;
+                    bestStage <- stage;
+                }
+            }
+            currentAssignment[guest] <- bestStage;
+        }
+        
+        float initialGlobalUtility <- calculateGlobalUtility(currentAssignment);
+        write "Initial Global Utility (greedy): " + initialGlobalUtility + "\n";
+        
+        write "\nInitial Assignment:";
+        loop stage over: stages {
+            list<Guest> guestsAtStage <- guests where (currentAssignment[each] = stage);
+            write "  " + stage.name + ": " + length(guestsAtStage) + " guests";
+        }
+        write "";
+        
+        // loop 100 times, finding best global assignment (approximate)
+        map<Guest, Stage> bestAssignment <- copy(currentAssignment);
+        float bestGlobalUtility <- initialGlobalUtility;
+        bool improved <- true;
+        int iteration <- 0;
+        int maxIterations <- 100;
+        
+        loop while: improved and iteration < maxIterations {
+            improved <- false;
+            iteration <- iteration + 1;
+            
+            // Try moving each guest to each stage
+            loop guest over: guests {
+                Stage currentStage <- bestAssignment[guest];
+                
+                loop stage over: stages {
+                    if (stage != currentStage) {
+                        // Create test assignment
+                        map<Guest, Stage> testAssignment <- copy(bestAssignment);
+                        testAssignment[guest] <- stage;
+                        
+                        float testUtility <- calculateGlobalUtility(testAssignment);
+                        
+                        if (testUtility > bestGlobalUtility) {
+                            bestGlobalUtility <- testUtility;
+                            bestAssignment <- copy(testAssignment);
+                            improved <- true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        write "Optimization completed after " + iteration + " iterations";
+        write "Final Global Utility: " + bestGlobalUtility;
+        write "Improvement: +" + (bestGlobalUtility - initialGlobalUtility) + "\n";
+        
+        write "Final Optimized Assignment:";
+        loop stage over: stages {
+            list<Guest> guestsAtStage <- guests where (bestAssignment[each] = stage);
+            write "  " + stage.name + ": " + length(guestsAtStage) + " guests";
+        }
+        write "\n=================================================\n";
+        
+        finalAssignments <- bestAssignment;
+        do broadcastAssignments(bestAssignment);
+    }
+    
+    float calculateGlobalUtility(map<Guest, Stage> assignment) {
+        float totalUtility <- 0.0;
+        
+        // count guests at each stage
+        map<Stage, int> stageCrowds <- [];
+        loop stage over: list(Stage) {
+            stageCrowds[stage] <- 0;
+        }
+        loop stage over: assignment.values {
+            stageCrowds[stage] <- stageCrowds[stage] + 1;
+        }
+        
+        // adjust each guest's utility based on crowd preference
+        loop guest over: assignment.keys {
+            Stage assignedStage <- assignment[guest];
+            
+            float baseUtility <- guestStageUtilities[guest][assignedStage];
+            
+            // crowd size at this stage
+            int crowdSize <- stageCrowds[assignedStage];
+            
+            // normalize crowd size (0 to 1)
+            int totalGuests <- length(assignment.keys);
+            float normalizedCrowd <- crowdSize / totalGuests;
+            
+            // calculate crowd utility based on guest's preference
+            float crowdPref <- guestCrowdPrefs[guest];
+            float crowdUtility <- 0.0;
+            
+            if (crowdPref < 0.5) {
+                // prefers smaller crowds - utility decreases with crowd size
+                float avoidanceFactor <- (0.5 - crowdPref) * 2;  // 0 to 1
+                crowdUtility <- (1.0 - normalizedCrowd) * avoidanceFactor;
+            } else {
+                // prefers larger crowds - utility increases with crowd size
+                float attractionFactor <- (crowdPref - 0.5) * 2;  // 0 to 1
+                crowdUtility <- normalizedCrowd * attractionFactor;
+            }
+            
+            // combine base utility (70%) and crowd utility (30%)
+            float finalUtility <- 0.7 * baseUtility + 0.3 * crowdUtility;
+            
+            totalUtility <- totalUtility + finalUtility;
+        }
+        
+        return totalUtility;
+    }
+    
+    action broadcastAssignments(map<Guest, Stage> assignment) {
+        write "[ShowOrganizer]: Broadcasting optimized assignments to guests\n";
+        
+        showDuration <- rnd(50, 150);
+        showStartTime <- int(time);
+        
+        loop guest over: assignment.keys {
+            Stage assignedStage <- assignment[guest];
+            
+            do start_conversation to: [guest] protocol: 'fipa-propose' performative: 'inform'
+                contents: ['assignedStage', assignedStage, showDuration];
+        }
+        
+        // tell stages to clear upcomingShow
+    	do start_conversation to: list(Stage) protocol: 'fipa-request' performative: 'request'
+        	contents: ['startShow'];
+    }
+    
+    reflex showsEnded when: showsActive and showStartTime > -1 and 
+                        int(time) - showStartTime > showDuration {
+	    write "\n[ShowOrganizer]: Shows have ended!\n";
+	    do resetState;
+	}
+    
+    action resetState {
+    	showsActive <- false;
+	    guestStageUtilities <- [];
+	    guestCrowdPrefs <- [];
+	    finalAssignments <- [];
+    }
+	
 }
 
 experiment festivalSimulation type:gui {
