@@ -393,6 +393,7 @@ species Guest skills: [moving, fipa] {
 			map<Stage, float> stageUtilities <- getStageUtilities();
 			do start_conversation to: list(ShowOrganizer) protocol: 'fipa-propose' performative: 'inform' 
 	           contents: ['stageChoice', stageUtilities, crowdMassPref];
+	        write name + " achieved maximum local utility of " + max(stageUtilities.values);
 	        waitingForStageInfo <- false;
 	        waitingForBestStage <- true;
 	        stageAttributes <- [];
@@ -865,6 +866,11 @@ species Stage skills: [fipa] {
 	// respond to attribute requests from guests
 	reflex handleAttributeRequests when: !empty(requests) {
 		loop req over: requests {
+			// from ShowOrganizer telling them to clear show
+	        if (list(req.contents)[0] = 'clearShow') {
+	            upcomingShow <- false;
+	        }
+			
 			// from ShowOrganizer telling them to set up for next round of shows
 			if (list(req.contents)[0] = 'setup') {
 				do setupAct;
@@ -879,11 +885,6 @@ species Stage skills: [fipa] {
 						contents: ['none'];
 				}
 			}
-			
-			// clear when shows start
-	        if (list(req.contents)[0] = 'clearShow') {
-	            upcomingShow <- false;
-	        }
 		}
 	}
 	
@@ -1021,7 +1022,7 @@ species ShowOrganizer skills: [fipa] {
 	        }
 	        write "  " + stage.name + " (" + length(guestsAtStage) + " guests): " + guestNames;
 	    }
-	    write "=================================================\n";
+	    write "\n=================================================\n";
         
         finalAssignments <- bestAssignment;
         do broadcastAssignments(bestAssignment);
@@ -1090,7 +1091,7 @@ species ShowOrganizer skills: [fipa] {
         
         // tell stages to clear upcomingShow
     	do start_conversation to: list(Stage) protocol: 'fipa-request' performative: 'request'
-        	contents: ['startShow'];
+        	contents: ['clearShow'];
     }
     
     reflex showsEnded when: showsActive and showStartTime > -1 and 
