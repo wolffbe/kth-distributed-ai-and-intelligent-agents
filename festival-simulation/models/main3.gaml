@@ -905,7 +905,7 @@ species ShowOrganizer skills: [fipa] {
 	reflex startShows when: !showsActive and flip(0.005) {
 		showsActive <- true;	// not strictly started yet, but process has begun
 		do start_conversation to: list(Stage) protocol: 'fipa-propose' performative: 'request' contents: ['setup'];
-		write "[ShowOrganizer]Shows will be starting soon.\n";
+		write "[ShowOrganizer] Shows will be starting soon.\n";
 	}
     
     reflex collectGuestPreferences when: showsActive and !empty(informs) {
@@ -946,14 +946,27 @@ species ShowOrganizer skills: [fipa] {
         }
         
         float initialGlobalUtility <- calculateGlobalUtility(currentAssignment);
-        write "Initial Global Utility (greedy): " + initialGlobalUtility + "\n";
         
-        write "\nInitial Assignment:";
-        loop stage over: stages {
-            list<Guest> guestsAtStage <- guests where (currentAssignment[each] = stage);
-            write "  " + stage.name + ": " + length(guestsAtStage) + " guests";
-        }
-        write "";
+        // build initial assignment summary to show starting utility
+	    map<Stage, list<Guest>> initialDistribution <- [];
+	    loop stage over: stages {
+	        initialDistribution[stage] <- guests where (currentAssignment[each] = stage);
+	    }
+        
+		write "Initial assignment based on locally optimal decisions (Global Utility: " + round(initialGlobalUtility * 100) / 100 + "):";
+	    loop stage over: stages {
+	        list<Guest> guestsAtStage <- initialDistribution[stage];
+	        string guestNames <- "";
+	        loop g over: guestsAtStage {
+	            guestNames <- guestNames + g.name + ", ";
+	        }
+	        // remove trailing comma
+	        if (length(guestNames) > 0) {
+	            guestNames <- copy_between(guestNames, 0, length(guestNames) - 2);
+	        }
+	        write "  " + stage.name + " (" + length(guestsAtStage) + " guests): " + guestNames;
+	    }
+	    write "";
         
         // loop 100 times, finding best global assignment (approximate)
         map<Guest, Stage> bestAssignment <- copy(currentAssignment);
@@ -966,7 +979,7 @@ species ShowOrganizer skills: [fipa] {
             improved <- false;
             iteration <- iteration + 1;
             
-            // Try moving each guest to each stage
+            // try moving each guest to each stage
             loop guest over: guests {
                 Stage currentStage <- bestAssignment[guest];
                 
@@ -989,15 +1002,26 @@ species ShowOrganizer skills: [fipa] {
         }
         
         write "Optimization completed after " + iteration + " iterations";
-        write "Final Global Utility: " + bestGlobalUtility;
-        write "Improvement: +" + (bestGlobalUtility - initialGlobalUtility) + "\n";
-        
-        write "Final Optimized Assignment:";
-        loop stage over: stages {
-            list<Guest> guestsAtStage <- guests where (bestAssignment[each] = stage);
-            write "  " + stage.name + ": " + length(guestsAtStage) + " guests";
-        }
-        write "\n=================================================\n";
+	    map<Stage, list<Guest>> finalDistribution <- [];
+	    loop stage over: stages {
+	        finalDistribution[stage] <- guests where (bestAssignment[each] = stage);
+	    }
+	    
+	    write "Final Optimized Assignment (Global Utility: " + round(bestGlobalUtility * 100) / 100 + 
+	          ", Improvement: +" + round((bestGlobalUtility - initialGlobalUtility) * 100) / 100 + "):";
+	    loop stage over: stages {
+	        list<Guest> guestsAtStage <- finalDistribution[stage];
+	        string guestNames <- "";
+	        loop g over: guestsAtStage {
+	            guestNames <- guestNames + g.name + ", ";
+	        }
+	        // remove trailing comma
+	        if (length(guestNames) > 0) {
+	            guestNames <- copy_between(guestNames, 0, length(guestNames) - 2);
+	        }
+	        write "  " + stage.name + " (" + length(guestsAtStage) + " guests): " + guestNames;
+	    }
+	    write "=================================================\n";
         
         finalAssignments <- bestAssignment;
         do broadcastAssignments(bestAssignment);
