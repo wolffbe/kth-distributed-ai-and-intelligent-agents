@@ -1,0 +1,1216 @@
+/**
+ * Protest Simulation with BDI Police + Q-Learning Journalists
+ * VERSION 7 - Challenge 1 (BDI) + Challenge 2 (RL)
+ * 
+ * BDI Architecture for Police:
+ * - Beliefs: violence_location, need_rest
+ * - Desires: patrol, pursue_criminal, arrest_criminal, rest_at_base
+ * - Intentions: selected from desires based on priority
+ * - Plans: do_patrol, do_pursue, do_arrest, do_rest
+ */
+
+model ProtestSimulation
+
+global {
+    // Environment
+    int environment_width <- 100;
+    int environment_height <- 100;
+    float step <- 1.0 #seconds;
+    
+    // Agent counts
+    int nb_protesters_A <- 15;
+    int nb_protesters_B <- 15;
+    int nb_police <- 10;
+    int nb_medics <- 5;
+    int nb_bystanders <- 10;
+    int nb_journalists <- 3;
+    
+    // Global variables
+    float global_aggression <- 0.5;
+    float base_decay_rate <- 0.001;
+    float aggression_increase_rate <- 0.02;
+    int total_arrests <- 0;
+    int total_attacks <- 0;
+    int total_documented_events <- 0;
+    int journalists_hit <- 0;
+    
+    // Crowd energy
+    float crowd_energy <- 1.0;
+    float energy_recovery_rate <- 0.002;
+    
+    // Rolling averages for charts
+    float attack_rate <- 0.0;
+    float arrest_rate <- 0.0;
+    float doc_rate <- 0.0;
+    
+    // Q-Learning parameters
+    float learning_rate <- 0.2;
+    float discount_factor <- 0.95;
+    float exploration_rate <- 0.3;
+    float exploration_decay <- 0.995;
+    float min_exploration_rate <- 0.05;
+    
+    // Locations
+    point police_car_location <- {10.0, 10.0};
+    point ambulance_location <- {90.0, 90.0};
+    point protest_center <- {50.0, 50.0};
+    float protest_radius <- 30.0;
+    
+    // Thresholds
+    float aggression_attack_threshold <- 0.5;
+    float police_stress_threshold <- 0.8;
+    float bystander_boredom_threshold <- 0.8;
+    float medic_exhaustion_threshold <- 0.9;
+    float detention_base_time <- 20.0;
+    
+    // ==================== BDI PREDICATES ====================
+    // String constants for predicate names (avoid typos)
+    string violence_location_str <- "violence_location";
+    string need_rest_str <- "need_rest";
+    
+    // Predicates for Police BDI architecture
+    predicate patrol_desire <- new_predicate("patrol");
+    predicate violence_seen <- new_predicate(violence_location_str);
+    predicate pursue_desire <- new_predicate("pursue_criminal");
+    predicate arrest_desire <- new_predicate("arrest_criminal");
+    predicate rest_desire <- new_predicate("rest_at_base");
+    predicate need_rest_belief <- new_predicate(need_rest_str);
+    
+    init {
+        write "=== Protest Simulation v7 ===";
+        write "BDI Police + Q-Learning Journalists";
+        write "";
+        write "BDI Components:";
+        write "  - Beliefs: violence_location, need_rest";
+        write "  - Desires: patrol, pursue_criminal, arrest_criminal, rest_at_base";
+        write "  - Plans: do_patrol, do_pursue, do_arrest, do_rest";
+        write "";
+        
+        create PoliceCarArea number: 1 {
+            location <- police_car_location;
+        }
+        
+        create AmbulanceArea number: 1 {
+            location <- ambulance_location;
+        }
+        
+        create ProtestZone number: 1 {
+            location <- protest_center;
+        }
+        
+        create Police number: nb_police {
+            location <- protest_center + {rnd(-20.0, 20.0), rnd(-20.0, 20.0)};
+        }
+        
+        create ProtesterA number: nb_protesters_A {
+            location <- protest_center + {rnd(-protest_radius, protest_radius), rnd(-protest_radius, protest_radius)};
+        }
+        
+        create ProtesterB number: nb_protesters_B {
+            location <- protest_center + {rnd(-protest_radius, protest_radius), rnd(-protest_radius, protest_radius)};
+        }
+        
+        create Medic number: nb_medics {
+            location <- any_location_in(world.shape);
+            home_base <- ambulance_location;
+        }
+        
+        create Journalist number: nb_journalists {
+            location <- protest_center + {rnd(-15.0, 15.0), rnd(-15.0, 15.0)};
+        }
+        
+        create Bystander number: nb_bystanders {
+            location <- any_location_in(world.shape);
+        }
+        
+        write "Created " + nb_police + " BDI Police, " + nb_journalists + " RL Journalists";
+        write "Simulation ready!";
+    }
+    
+    // Dynamic decay - increase base rate
+    reflex update_global_state {
+        float dynamic_decay <- base_decay_rate * (1.0 + global_aggression * 3.0);  // Stronger decay
+        global_aggression <- max(0.25, global_aggression - dynamic_decay);
+        crowd_energy <- min(1.0, crowd_energy + energy_recovery_rate);
+        exploration_rate <- max(min_exploration_rate, exploration_rate * exploration_decay);
+        
+        attack_rate <- attack_rate * 0.98;
+        arrest_rate <- arrest_rate * 0.98;
+        doc_rate <- doc_rate * 0.98;
+    }
+    
+    // Police calming effect
+    reflex police_calming when: mod(cycle, 20) = 0 {
+        int active_police <- length(Police where each.is_active);
+        int detained_count <- length(ProtesterA where each.is_detained) + length(ProtesterB where each.is_detained);
+        float deterrent <- (active_police * 0.003) + (detained_count * 0.005);
+        global_aggression <- max(0.25, global_aggression - deterrent);
+    }
+    
+    // Random tension
+    reflex random_tension when: mod(cycle, 30) = 0 and rnd(0.0, 1.0) < 0.4 {
+        float increase <- rnd(0.05, 0.15);
+        global_aggression <- min(0.9, global_aggression + increase);
+        write ">>> Tension rises! +" + int(increase*100) + "%";
+    }
+    
+    // Major incident
+    reflex major_incident when: mod(cycle, 200) = 0 and rnd(0.0, 1.0) < 0.3 {
+        global_aggression <- min(0.9, global_aggression + 0.2);
+        crowd_energy <- max(0.3, crowd_energy - 0.15);
+        
+        ask 4 among (ProtesterA where !each.is_detained) {
+            aggression <- min(0.95, aggression + 0.2);
+        }
+        ask 4 among (ProtesterB where !each.is_detained) {
+            aggression <- min(0.95, aggression + 0.2);
+        }
+        write "!!! MAJOR INCIDENT !!!";
+    }
+    
+    // Frustration builds
+    reflex increase_frustration when: mod(cycle, 30) = 0 {
+        ask ProtesterA where (!each.is_detained) {
+            aggression <- min(0.9, aggression + rnd(0.01, 0.03));
+        }
+        ask ProtesterB where (!each.is_detained) {
+            aggression <- min(0.9, aggression + rnd(0.01, 0.03));
+        }
+    }
+    
+    // Release prisoners
+    reflex release_prisoners when: mod(cycle, 10) = 0 {
+        ask ProtesterA where (each.is_detained and each.detention_timer <= 0) {
+            is_detained <- false;
+            location <- protest_center + {rnd(-protest_radius, protest_radius), rnd(-protest_radius, protest_radius)};
+            aggression <- rnd(0.4, 0.7);
+            write name + " released";
+        }
+        
+        ask ProtesterB where (each.is_detained and each.detention_timer <= 0) {
+            is_detained <- false;
+            location <- protest_center + {rnd(-protest_radius, protest_radius), rnd(-protest_radius, protest_radius)};
+            aggression <- rnd(0.4, 0.7);
+            write name + " released";
+        }
+    }
+    
+    // Spawn bystanders
+    reflex spawn_bystanders when: length(Bystander) < 5 and mod(cycle, 50) = 0 {
+        create Bystander number: 2 {
+            location <- {rnd(80.0, 100.0), rnd(0.0, 100.0)};
+        }
+    }
+    
+    // Respawn police
+    reflex respawn_police when: mod(cycle, 100) = 0 {
+        ask Police where (!each.is_active) {
+            is_active <- true;
+            was_hit <- false;
+            stress_level <- 0.3;
+            location <- police_car_location;
+            target_point <- nil;
+            current_target <- nil;
+            
+            // Reset BDI state - remove specific predicates
+            do remove_belief(violence_seen);
+            do remove_belief(need_rest_belief);
+            do remove_desire(patrol_desire);
+            do remove_desire(pursue_desire);
+            do remove_desire(arrest_desire);
+            do remove_desire(rest_desire);
+            do remove_intention(patrol_desire, true);
+            do remove_intention(pursue_desire, true);
+            do remove_intention(arrest_desire, true);
+            do remove_intention(rest_desire, true);
+            
+            // Start fresh with patrol desire
+            do add_desire(patrol_desire);
+            
+            write name + " [BDI] back on duty";
+        }
+    }
+    
+    // Respawn journalists
+    reflex respawn_journalists when: mod(cycle, 120) = 0 {
+        ask Journalist where (!each.is_active) {
+            is_active <- true;
+            was_hit <- false;
+            location <- protest_center + {rnd(-10.0, 10.0), rnd(15.0, 25.0)};
+            write name + " [RL] recovered";
+        }
+    }
+}
+
+// ==================== LOCATIONS ====================
+
+species PoliceCarArea {
+    aspect default {
+        draw square(8.0) color: #blue border: #darkblue;
+        draw "POLICE HQ" at: location + {0, -5} color: #white font: font("Arial", 10, #bold);
+    }
+}
+
+species AmbulanceArea {
+    aspect default {
+        draw square(8.0) color: #white border: #red;
+        draw "+" at: location color: #red font: font("Arial", 14, #bold);
+    }
+}
+
+species ProtestZone {
+    aspect default {
+        draw circle(protest_radius) color: rgb(255, 200, 200, 50) border: #red;
+    }
+}
+
+// ==================== BDI POLICE ====================
+// Uses simple_bdi control architecture with perceive, rule, and plan
+
+species Police skills: [moving, fipa] control: simple_bdi {
+    
+    // ===== TRAITS (3 personal traits) =====
+    float stress_level <- rnd(0.2, 0.5);    // Increases during pursuits/arrests
+    float experience <- rnd(0.3, 0.8);       // Affects decision making
+    float patience <- rnd(0.4, 0.9);         // Affects stress buildup
+    
+    float view_dist <- 25.0;                 // Perception radius
+    float my_speed <- 2.0;
+    
+    // ===== STATE =====
+    bool is_active <- true;
+    bool was_hit <- false;
+    point target_point <- nil;
+    agent current_target <- nil;
+    int arrests_made <- 0;
+    
+    // ===== BDI INITIALIZATION =====
+    init {
+        // Initial desire: patrol the area
+        do add_desire(patrol_desire);
+    }
+    
+    // ===== PERCEIVE: Detect violent protesters =====
+    // When police sees a violent ProtesterA, add belief about violence location
+    perceive target: ProtesterA where (each.is_attacking and !each.is_detained) in: view_dist {
+        // 'self' here is the perceived ProtesterA
+        // Store reference before switching context
+        ProtesterA the_criminal <- self;
+        point crime_location <- self.location;
+        
+        focus id: violence_location_str var: location;
+        
+        ask myself {
+            // 'myself' here is the Police agent
+            if (is_active and current_target = nil) {
+                current_target <- the_criminal;
+                target_point <- crime_location;
+                do add_belief(violence_seen);
+                do remove_intention(patrol_desire, false);
+                write name + " [BDI PERCEIVE] Sees violence by " + the_criminal.name;
+            }
+        }
+    }
+    
+    // When police sees a violent ProtesterB
+    perceive target: ProtesterB where (each.is_attacking and !each.is_detained) in: view_dist {
+        ProtesterB the_criminal <- self;
+        point crime_location <- self.location;
+        
+        focus id: violence_location_str var: location;
+        
+        ask myself {
+            if (is_active and current_target = nil) {
+                current_target <- the_criminal;
+                target_point <- crime_location;
+                do add_belief(violence_seen);
+                do remove_intention(patrol_desire, false);
+                write name + " [BDI PERCEIVE] Sees violence by " + the_criminal.name;
+            }
+        }
+    }
+    
+    // ===== RULES: Infer new desires from beliefs =====
+    // Rule 1: If see violence -> desire to pursue (strength 3)
+    rule belief: violence_seen new_desire: pursue_desire strength: 3.0;
+    
+    // Rule 2: If need rest -> desire to rest (strength 5, highest priority)
+    rule belief: need_rest_belief new_desire: rest_desire strength: 5.0;
+    
+    // ===== PLANS: Actions to achieve intentions =====
+    
+    // Plan 1: Patrol the protest area (default behavior)
+    plan do_patrol intention: patrol_desire {
+        if (!is_active) {
+            do remove_intention(patrol_desire, false);
+            return;
+        }
+        
+        // Wander around protest center
+        point patrol_point <- protest_center + {rnd(-protest_radius, protest_radius), rnd(-protest_radius, protest_radius)};
+        do goto target: patrol_point speed: my_speed;
+        
+        // Slowly increase stress while on duty (patience affects rate)
+        stress_level <- min(1.0, stress_level + 0.0005 * (1.0 - patience));
+        
+        // Check if need rest
+        if (stress_level > police_stress_threshold) {
+            do add_belief(need_rest_belief);
+            write name + " [BDI RULE] Stress high (" + int(stress_level*100) + "%) -> needs rest";
+        }
+    }
+    
+    // Plan 2: Pursue violent protester
+    plan do_pursue intention: pursue_desire {
+        if (!is_active) {
+            do remove_intention(pursue_desire, true);
+            do add_desire(patrol_desire);
+            return;
+        }
+        
+        // Validate target still exists and is attacking
+        if (current_target = nil or dead(current_target)) {
+            write name + " [BDI] No valid target, clearing";
+            do clear_target;
+            return;
+        }
+        
+        bool still_valid <- false;
+        if (current_target is ProtesterA) {
+            ProtesterA p <- ProtesterA(current_target);
+            still_valid <- p.is_attacking and !p.is_detained;
+            target_point <- p.location;
+        } else if (current_target is ProtesterB) {
+            ProtesterB p <- ProtesterB(current_target);
+            still_valid <- p.is_attacking and !p.is_detained;
+            target_point <- p.location;
+        }
+        
+        if (!still_valid) {
+            write name + " [BDI PLAN] Target no longer attacking, clearing";
+            do clear_target;
+            return;
+        }
+        
+        // Chase the target
+        do goto target: target_point speed: my_speed * 1.5;
+        stress_level <- min(1.0, stress_level + 0.002);
+        
+        // Request FIPA backup
+        do request_backup;
+        
+        // Close enough to arrest? Do it directly!
+        float dist_to_target <- self distance_to current_target;
+        if (dist_to_target < 4.0) {
+            write name + " [BDI] Close enough (" + int(dist_to_target) + "m) - ARRESTING!";
+            do execute_arrest;
+        }
+    }
+    
+    // Direct arrest action (called from pursue plan)
+    action execute_arrest {
+        if (current_target = nil or dead(current_target)) {
+            do clear_target;
+            return;
+        }
+        
+        bool arrested <- false;
+        
+        if (current_target is ProtesterA) {
+            ProtesterA p <- ProtesterA(current_target);
+            if (!p.is_detained) {
+                p.is_detained <- true;
+                p.is_attacking <- false;
+                p.attack_target <- nil;
+                p.detention_timer <- detention_base_time;
+                p.location <- police_car_location;
+                arrested <- true;
+                write "*** [BDI ARREST] " + name + " arrested " + p.name + " ***";
+            }
+        } else if (current_target is ProtesterB) {
+            ProtesterB p <- ProtesterB(current_target);
+            if (!p.is_detained) {
+                p.is_detained <- true;
+                p.is_attacking <- false;
+                p.attack_target <- nil;
+                p.detention_timer <- detention_base_time;
+                p.location <- police_car_location;
+                arrested <- true;
+                write "*** [BDI ARREST] " + name + " arrested " + p.name + " ***";
+            }
+        }
+        
+        if (arrested) {
+            total_arrests <- total_arrests + 1;
+            arrests_made <- arrests_made + 1;
+            arrest_rate <- arrest_rate + 5.0;
+            global_aggression <- min(0.9, global_aggression + 0.02);
+            crowd_energy <- max(0.2, crowd_energy - 0.03);
+            stress_level <- min(1.0, stress_level + 0.1);
+        }
+        
+        // Clear and go back to patrol
+        do clear_target;
+    }
+    
+    // Plan 3: Make arrest (kept for BDI completeness but arrest happens in pursue now)
+    plan do_arrest intention: arrest_desire instantaneous: true {
+        do execute_arrest;
+        do remove_intention(arrest_desire, true);
+    }
+    
+    // Plan 4: Rest at police car
+    plan do_rest intention: rest_desire {
+        do goto target: police_car_location speed: my_speed;
+        
+        if (self distance_to police_car_location < 5.0) {
+            // Recover stress
+            stress_level <- max(0.2, stress_level - 0.03);
+            
+            if (stress_level < 0.4) {
+                do remove_belief(need_rest_belief);
+                do remove_intention(rest_desire, true);
+                do add_desire(patrol_desire);
+                write name + " [BDI PLAN] Rested! Stress: " + int(stress_level*100) + "% -> back to patrol";
+            }
+        }
+    }
+    
+    // ===== HELPER ACTIONS =====
+    
+    action clear_target {
+        current_target <- nil;
+        target_point <- nil;
+        do remove_belief(violence_seen);
+        do remove_intention(pursue_desire, true);
+        do remove_intention(arrest_desire, true);
+        do remove_desire(pursue_desire);
+        do remove_desire(arrest_desire);
+        
+        // Always go back to patrol if active and not resting
+        if (is_active and !has_belief(need_rest_belief)) {
+            do add_desire(patrol_desire);
+            write name + " [BDI] Cleared target, back to patrol";
+        }
+    }
+    
+    action request_backup {
+        if (rnd(0.0, 1.0) < 0.05) {  // 5% chance per step when pursuing
+            list<Police> available <- (Police at_distance(50.0)) where (each.is_active and each != self and each.current_target = nil);
+            if (length(available) >= 1) {
+                list<Police> helpers <- 2 among available;
+                do start_conversation to: list(helpers) protocol: 'fipa-request' performative: 'request' 
+                    contents: ["backup_needed", target_point];
+                write name + " [FIPA] Requesting backup at " + target_point;
+            }
+        }
+    }
+    
+    // Handle FIPA backup requests
+    reflex handle_fipa_messages when: !empty(requests) {
+        loop msg over: requests {
+            list msg_content <- list(msg.contents);
+            if (string(msg_content[0]) = "backup_needed" and is_active and current_target = nil) {
+                point backup_loc <- point(msg_content[1]);
+                target_point <- backup_loc;
+                do add_belief(violence_seen);
+                write name + " [FIPA] Responding to backup request";
+                do agree message: msg contents: ["on_my_way"];
+            }
+        }
+        requests <- [];
+    }
+    
+    // Get hit by protester
+    action get_hit {
+        was_hit <- true;
+        is_active <- false;
+        current_target <- nil;
+        target_point <- nil;
+        
+        // Reset BDI state - remove specific predicates
+        do remove_belief(violence_seen);
+        do remove_belief(need_rest_belief);
+        do remove_desire(patrol_desire);
+        do remove_desire(pursue_desire);
+        do remove_desire(arrest_desire);
+        do remove_desire(rest_desire);
+        do remove_intention(patrol_desire, true);
+        do remove_intention(pursue_desire, true);
+        do remove_intention(arrest_desire, true);
+        do remove_intention(rest_desire, true);
+        
+        write "!!! [BDI] POLICE " + name + " DOWN !!!";
+    }
+    
+    // ===== ASPECT =====
+    aspect default {
+        rgb c <- #blue;
+        if (has_desire(pursue_desire) or has_desire(arrest_desire)) { c <- #darkblue; }
+        if (has_desire(rest_desire)) { c <- #lightblue; }
+        if (!is_active) { c <- #gray; }
+        
+        draw circle(2.0) color: c border: #darkblue;
+        draw "P" at: location color: #white font: font("Arial", 10, #bold);
+        
+        // Show perception radius when active
+        if (is_active) {
+            draw circle(view_dist) color: rgb(0, 0, 255, 20) border: rgb(0, 0, 255, 50);
+        }
+        
+        // Stress bar above agent
+        draw rectangle(4, 0.5) at: location + {0, -3} color: #darkgray;
+        draw rectangle(4 * stress_level, 0.5) at: location + {-2 + 2*stress_level, -3} color: stress_level > police_stress_threshold ? #red : #green;
+    }
+}
+
+// ==================== PROTESTER A ====================
+
+species ProtesterA skills: [moving] {
+    float aggression <- rnd(0.5, 0.85);
+    float courage <- rnd(0.4, 0.8);
+    
+    bool is_attacking <- false;
+    bool is_detained <- false;
+    bool is_injured <- false;
+    float health <- 1.0;
+    float detention_timer <- 0.0;
+    agent attack_target <- nil;
+    int attack_timer <- 0;
+    
+    float perception_radius <- 12.0;
+    
+    reflex update_detention when: is_detained {
+        detention_timer <- detention_timer - 1.0;
+    }
+    
+    reflex wander when: !is_detained and !is_attacking {
+        if (self distance_to protest_center > protest_radius + 5) {
+            do goto target: protest_center speed: 1.0;
+        } else {
+            do wander amplitude: 30.0 speed: 0.5;
+        }
+    }
+    
+    reflex maybe_attack when: !is_detained and !is_attacking and mod(cycle, 3) = 0 {
+        float effective_agg <- (aggression * 0.6) + (global_aggression * 0.4);
+        
+        if (effective_agg > aggression_attack_threshold and rnd(0.0, 1.0) < 0.3) {
+            float r <- rnd(0.0, 1.0);
+            
+            if (r < 0.4) {
+                list<ProtesterB> targets <- ProtesterB at_distance(perception_radius) where (!each.is_detained);
+                if (!empty(targets)) {
+                    attack_target <- one_of(targets);
+                    is_attacking <- true;
+                    attack_timer <- rnd(15, 40);
+                    write name + " attacks Group B!";
+                }
+            } else if (r < 0.6 and courage > 0.5) {
+                list<Police> targets <- Police at_distance(perception_radius) where (each.is_active);
+                if (!empty(targets)) {
+                    attack_target <- one_of(targets);
+                    is_attacking <- true;
+                    attack_timer <- rnd(10, 25);
+                    write name + " attacks POLICE!";
+                }
+            } else if (r < 0.8) {
+                list<Journalist> targets <- Journalist at_distance(perception_radius) where (each.is_active);
+                if (!empty(targets)) {
+                    attack_target <- one_of(targets);
+                    is_attacking <- true;
+                    attack_timer <- rnd(8, 20);
+                    write name + " attacks JOURNALIST!";
+                }
+            }
+        }
+    }
+    
+    reflex do_attack when: is_attacking and !is_detained {
+        attack_timer <- attack_timer - 1;
+        
+        if (attack_target = nil or dead(attack_target) or attack_timer <= 0) {
+            is_attacking <- false;
+            attack_target <- nil;
+            return;
+        }
+        
+        if (attack_target is ProtesterB and ProtesterB(attack_target).is_detained) {
+            is_attacking <- false;
+            attack_target <- nil;
+            return;
+        }
+        
+        do goto target: attack_target speed: 2.0;
+        
+        if (self distance_to attack_target < 2.0) {
+            do hit_target;
+        }
+    }
+    
+    action hit_target {
+        total_attacks <- total_attacks + 1;
+        attack_rate <- attack_rate + 3.0;
+        global_aggression <- min(0.9, global_aggression + 0.01);
+        
+        if (attack_target is Police) {
+            if (rnd(0.0, 1.0) < 0.15) {
+                ask Police(attack_target) { do get_hit; }
+                write "!!! " + name + " HITS POLICE !!!";
+            }
+        } else if (attack_target is ProtesterB) {
+            ProtesterB(attack_target).health <- ProtesterB(attack_target).health - 0.1;
+            ProtesterB(attack_target).is_injured <- ProtesterB(attack_target).health < 0.5;
+        } else if (attack_target is Journalist) {
+            if (rnd(0.0, 1.0) < 0.4) {
+                ask Journalist(attack_target) { do get_hit; }
+                journalists_hit <- journalists_hit + 1;
+                write "!!! " + name + " HITS JOURNALIST !!!";
+            }
+        }
+        
+        aggression <- max(0.4, aggression - 0.02);
+    }
+    
+    aspect default {
+        rgb c <- #red;
+        if (is_detained) { c <- #gray; }
+        else if (is_attacking) { c <- #darkred; }
+        else if (is_injured) { c <- #pink; }
+        draw triangle(1.5) color: c border: #darkred;
+        draw "A" at: location color: #white font: font("Arial", 8, #bold);
+    }
+}
+
+// ==================== PROTESTER B ====================
+
+species ProtesterB skills: [moving] {
+    float aggression <- rnd(0.5, 0.85);
+    float courage <- rnd(0.4, 0.8);
+    
+    bool is_attacking <- false;
+    bool is_detained <- false;
+    bool is_injured <- false;
+    float health <- 1.0;
+    float detention_timer <- 0.0;
+    agent attack_target <- nil;
+    int attack_timer <- 0;
+    
+    float perception_radius <- 12.0;
+    
+    reflex update_detention when: is_detained {
+        detention_timer <- detention_timer - 1.0;
+    }
+    
+    reflex wander when: !is_detained and !is_attacking {
+        if (self distance_to protest_center > protest_radius + 5) {
+            do goto target: protest_center speed: 1.0;
+        } else {
+            do wander amplitude: 30.0 speed: 0.5;
+        }
+    }
+    
+    reflex maybe_attack when: !is_detained and !is_attacking and mod(cycle, 3) = 0 {
+        float effective_agg <- (aggression * 0.6) + (global_aggression * 0.4);
+        
+        if (effective_agg > aggression_attack_threshold and rnd(0.0, 1.0) < 0.3) {
+            float r <- rnd(0.0, 1.0);
+            
+            if (r < 0.4) {
+                list<ProtesterA> targets <- ProtesterA at_distance(perception_radius) where (!each.is_detained);
+                if (!empty(targets)) {
+                    attack_target <- one_of(targets);
+                    is_attacking <- true;
+                    attack_timer <- rnd(15, 40);
+                    write name + " attacks Group A!";
+                }
+            } else if (r < 0.6 and courage > 0.5) {
+                list<Police> targets <- Police at_distance(perception_radius) where (each.is_active);
+                if (!empty(targets)) {
+                    attack_target <- one_of(targets);
+                    is_attacking <- true;
+                    attack_timer <- rnd(10, 25);
+                    write name + " attacks POLICE!";
+                }
+            } else if (r < 0.8) {
+                list<Journalist> targets <- Journalist at_distance(perception_radius) where (each.is_active);
+                if (!empty(targets)) {
+                    attack_target <- one_of(targets);
+                    is_attacking <- true;
+                    attack_timer <- rnd(8, 20);
+                    write name + " attacks JOURNALIST!";
+                }
+            }
+        }
+    }
+    
+    reflex do_attack when: is_attacking and !is_detained {
+        attack_timer <- attack_timer - 1;
+        
+        if (attack_target = nil or dead(attack_target) or attack_timer <= 0) {
+            is_attacking <- false;
+            attack_target <- nil;
+            return;
+        }
+        
+        if (attack_target is ProtesterA and ProtesterA(attack_target).is_detained) {
+            is_attacking <- false;
+            attack_target <- nil;
+            return;
+        }
+        
+        do goto target: attack_target speed: 2.0;
+        
+        if (self distance_to attack_target < 2.0) {
+            do hit_target;
+        }
+    }
+    
+    action hit_target {
+        total_attacks <- total_attacks + 1;
+        attack_rate <- attack_rate + 3.0;
+        global_aggression <- min(0.9, global_aggression + 0.01);
+        
+        if (attack_target is Police) {
+            if (rnd(0.0, 1.0) < 0.15) {
+                ask Police(attack_target) { do get_hit; }
+                write "!!! " + name + " HITS POLICE !!!";
+            }
+        } else if (attack_target is ProtesterA) {
+            ProtesterA(attack_target).health <- ProtesterA(attack_target).health - 0.1;
+            ProtesterA(attack_target).is_injured <- ProtesterA(attack_target).health < 0.5;
+        } else if (attack_target is Journalist) {
+            if (rnd(0.0, 1.0) < 0.4) {
+                ask Journalist(attack_target) { do get_hit; }
+                journalists_hit <- journalists_hit + 1;
+                write "!!! " + name + " HITS JOURNALIST !!!";
+            }
+        }
+        
+        aggression <- max(0.4, aggression - 0.02);
+    }
+    
+    aspect default {
+        rgb c <- #orange;
+        if (is_detained) { c <- #gray; }
+        else if (is_attacking) { c <- #darkorange; }
+        else if (is_injured) { c <- #lightyellow; }
+        draw triangle(1.5) color: c border: #darkorange;
+        draw "B" at: location color: #black font: font("Arial", 8, #bold);
+    }
+}
+
+// ==================== MEDIC ====================
+
+species Medic skills: [moving] {
+    float exhaustion <- 0.0;
+    float skill_level <- rnd(0.5, 1.0);
+    
+    bool is_recovering <- false;
+    agent heal_target <- nil;
+    point home_base;
+    int recovery_timer <- 0;
+    
+    reflex find_injured when: !is_recovering and heal_target = nil {
+        list<ProtesterA> injured_A <- ProtesterA at_distance(25.0) where (each.is_injured and !each.is_detained);
+        list<ProtesterB> injured_B <- ProtesterB at_distance(25.0) where (each.is_injured and !each.is_detained);
+        
+        if (!empty(injured_A)) { heal_target <- injured_A with_min_of(each.health); }
+        else if (!empty(injured_B)) { heal_target <- injured_B with_min_of(each.health); }
+    }
+    
+    reflex heal when: heal_target != nil and !is_recovering {
+        if (dead(heal_target)) { heal_target <- nil; return; }
+        
+        do goto target: heal_target speed: 1.5;
+        
+        if (self distance_to heal_target < 2.0) {
+            if (heal_target is ProtesterA) {
+                ProtesterA(heal_target).health <- min(1.0, ProtesterA(heal_target).health + 0.3);
+                ProtesterA(heal_target).is_injured <- ProtesterA(heal_target).health < 0.5;
+            } else {
+                ProtesterB(heal_target).health <- min(1.0, ProtesterB(heal_target).health + 0.3);
+                ProtesterB(heal_target).is_injured <- ProtesterB(heal_target).health < 0.5;
+            }
+            exhaustion <- exhaustion + 0.15;
+            heal_target <- nil;
+        }
+    }
+    
+    reflex patrol when: heal_target = nil and !is_recovering {
+        do wander amplitude: 45.0 speed: 0.8;
+    }
+    
+    reflex check_exhaustion when: exhaustion > medic_exhaustion_threshold and !is_recovering {
+        is_recovering <- true;
+        recovery_timer <- 40;
+    }
+    
+    reflex recover when: is_recovering {
+        do goto target: home_base speed: 2.0;
+        if (self distance_to home_base < 3.0) {
+            recovery_timer <- recovery_timer - 1;
+            exhaustion <- max(0.0, exhaustion - 0.05);
+            if (recovery_timer <= 0) { is_recovering <- false; }
+        }
+    }
+    
+    aspect default {
+        draw circle(2.0) color: is_recovering ? #lightgreen : #green border: #darkgreen;
+        draw "+" at: location color: #white font: font("Arial", 12, #bold);
+    }
+}
+
+// ==================== Q-LEARNING JOURNALIST ====================
+
+species Journalist skills: [moving] {
+    // Traits
+    float experience <- rnd(0.6, 0.95);
+    float speed_mult <- rnd(0.9, 1.1);
+    
+    // State
+    bool is_documenting <- false;
+    bool was_hit <- false;
+    bool is_active <- true;
+    float cumulative_reward <- 0.0;
+    int docs <- 0;
+    int hits <- 0;
+    
+    // Q-Learning
+    map<string, float> q_table;
+    string last_state <- "";
+    string last_action <- "";
+    
+    init {
+        // Initialize Q-table with all state-action pairs
+        list<string> dists <- ["vclose", "close", "med", "far"];
+        list<string> dangers <- ["safe", "mod", "danger"];
+        list<string> events <- ["none", "attack", "arrest"];
+        list<string> acts <- ["closer", "away", "document", "flee"];
+        
+        loop d over: dists {
+            loop dg over: dangers {
+                loop e over: events {
+                    loop a over: acts {
+                        q_table[d + "_" + dg + "_" + e + "_" + a] <- 0.0;
+                    }
+                }
+            }
+        }
+    }
+    
+    int count_events {
+        return length(ProtesterA where each.is_attacking) + 
+               length(ProtesterB where each.is_attacking) +
+               length(Police where (each.current_target != nil));
+    }
+    
+    string get_state {
+        float min_d <- 999.0;
+        string etype <- "none";
+        
+        ask ProtesterA where each.is_attacking {
+            float d <- myself distance_to self;
+            if (d < min_d) { min_d <- d; etype <- "attack"; }
+        }
+        ask ProtesterB where each.is_attacking {
+            float d <- myself distance_to self;
+            if (d < min_d) { min_d <- d; etype <- "attack"; }
+        }
+        ask Police where (each.current_target != nil) {
+            float d <- myself distance_to self;
+            if (d < min_d) { min_d <- d; etype <- "arrest"; }
+        }
+        
+        string ds <- "far";
+        if (min_d < 5) { ds <- "vclose"; }
+        else if (min_d < 12) { ds <- "close"; }
+        else if (min_d < 25) { ds <- "med"; }
+        
+        int nearby <- length(ProtesterA at_distance(8.0) where each.is_attacking) +
+                      length(ProtesterB at_distance(8.0) where each.is_attacking);
+        string danger <- "safe";
+        if (nearby >= 2) { danger <- "danger"; }
+        else if (nearby >= 1) { danger <- "mod"; }
+        
+        return ds + "_" + danger + "_" + etype;
+    }
+    
+    point get_event_loc {
+        float min_d <- 999.0;
+        point loc <- nil;
+        
+        ask ProtesterA where each.is_attacking {
+            float d <- myself distance_to self;
+            if (d < min_d) { min_d <- d; loc <- self.location; }
+        }
+        ask ProtesterB where each.is_attacking {
+            float d <- myself distance_to self;
+            if (d < min_d) { min_d <- d; loc <- self.location; }
+        }
+        ask Police where (each.current_target != nil) {
+            float d <- myself distance_to self;
+            if (d < min_d) { min_d <- d; loc <- self.location; }
+        }
+        return loc;
+    }
+    
+    float get_q(string s, string a) {
+        string k <- s + "_" + a;
+        return q_table contains_key k ? q_table[k] : 0.0;
+    }
+    
+    string best_action(string s) {
+        list<string> acts <- ["closer", "away", "document", "flee"];
+        string best <- "closer";
+        float best_v <- get_q(s, "closer");
+        loop a over: acts {
+            float v <- get_q(s, a);
+            if (v > best_v) { best_v <- v; best <- a; }
+        }
+        return best;
+    }
+    
+    float max_q(string s) {
+        list<string> acts <- ["closer", "away", "document", "flee"];
+        float m <- -9999.0;
+        loop a over: acts {
+            float v <- get_q(s, a);
+            if (v > m) { m <- v; }
+        }
+        return m;
+    }
+    
+    // Main Q-Learning loop
+    reflex q_step when: is_active {
+        string state <- get_state();
+        
+        // Epsilon-greedy action selection
+        string chosen_act;
+        if (rnd(0.0, 1.0) < exploration_rate) {
+            chosen_act <- one_of(["closer", "away", "document", "flee"]);
+        } else {
+            chosen_act <- best_action(state);
+        }
+        
+        point evt <- get_event_loc();
+        bool has_evt <- (evt != nil);
+        bool did_doc <- false;
+        is_documenting <- false;
+        
+        // Execute action
+        if (chosen_act = "closer") {
+            if (has_evt) { do goto target: evt speed: 2.0 * speed_mult; }
+            else { do goto target: protest_center speed: 1.0 * speed_mult; }
+        } else if (chosen_act = "away") {
+            if (has_evt) {
+                do goto target: location + (location - evt) speed: 2.5 * speed_mult;
+            } else {
+                do wander amplitude: 20.0 speed: 1.0;
+            }
+        } else if (chosen_act = "document") {
+            if (has_evt) {
+                float d <- self distance_to evt;
+                if (d < 20.0 and rnd(0.0, 1.0) < experience) {
+                    did_doc <- true;
+                    docs <- docs + 1;
+                    total_documented_events <- total_documented_events + 1;
+                    doc_rate <- doc_rate + 3.0;
+                    is_documenting <- true;
+                    write name + " [RL] DOCUMENTED at dist " + int(d);
+                }
+            }
+        } else if (chosen_act = "flee") {
+            do goto target: {rnd(5.0, 15.0), rnd(5.0, 15.0)} speed: 3.0 * speed_mult;
+        }
+        
+        // Calculate reward
+        float reward <- 0.0;
+        
+        bool hit_now <- was_hit;
+        if (hit_now) {
+            reward <- -50.0;
+            was_hit <- false;
+        }
+        
+        if (did_doc) {
+            if (state contains "vclose") { reward <- reward + 40.0; }
+            else if (state contains "close") { reward <- reward + 25.0; }
+            else if (state contains "med") { reward <- reward + 12.0; }
+            else { reward <- reward + 5.0; }
+        }
+        
+        if (has_evt and !did_doc and chosen_act != "flee") {
+            float d <- self distance_to evt;
+            if (d < 15) { reward <- reward + 1.0; }
+        }
+        
+        if (chosen_act = "document" and !did_doc) {
+            reward <- reward - 1.0;
+        }
+        
+        cumulative_reward <- cumulative_reward + reward;
+        
+        // Q-learning update: Q(s,a) <- Q(s,a) + α[R + γ·max(Q(s',a')) - Q(s,a)]
+        if (last_state != "" and last_action != "") {
+            string k <- last_state + "_" + last_action;
+            float old_q <- q_table contains_key k ? q_table[k] : 0.0;
+            float new_q <- old_q + learning_rate * (reward + discount_factor * max_q(state) - old_q);
+            q_table[k] <- new_q;
+        }
+        
+        last_state <- state;
+        last_action <- chosen_act;
+    }
+    
+    reflex idle_wander when: is_active and count_events() = 0 {
+        do wander amplitude: 15.0 speed: 0.6;
+    }
+    
+    action get_hit {
+        was_hit <- true;
+        hits <- hits + 1;
+        if (rnd(0.0, 1.0) < 0.35) {
+            is_active <- false;
+            write "!!! [RL] JOURNALIST " + name + " DOWN !!!";
+        } else {
+            write name + " [RL] hit but continues";
+        }
+    }
+    
+    aspect default {
+        rgb c <- #purple;
+        if (is_documenting) { c <- #magenta; }
+        if (!is_active) { c <- #gray; }
+        draw square(1.8) color: c border: #darkmagenta;
+        draw "J" at: location color: #white font: font("Arial", 10, #bold);
+        if (is_documenting) { draw circle(1.0) at: location + {2, -2} color: #yellow; }
+        draw string(int(cumulative_reward)) at: location + {0, 3} color: #black font: font("Arial", 8, #plain);
+    }
+}
+
+// ==================== BYSTANDER ====================
+
+species Bystander skills: [moving] {
+    float boredom <- 0.0;
+    float fear <- 0.0;
+    bool is_leaving <- false;
+    
+    reflex observe when: !is_leaving {
+        int activity <- length(Police at_distance(15.0)) + 
+                        length(ProtesterA at_distance(15.0) where each.is_attacking) +
+                        length(ProtesterB at_distance(15.0) where each.is_attacking);
+        
+        if (activity > 0) {
+            boredom <- max(0.0, boredom - 0.02 * activity);
+            int arrests <- length(Police at_distance(15.0) where (each.current_target != nil));
+            if (arrests > 0) { fear <- min(1.0, fear + 0.1); boredom <- boredom + 0.03; }
+        } else {
+            boredom <- boredom + 0.008;
+        }
+        do wander amplitude: 20.0 speed: 0.3;
+    }
+    
+    reflex check_leave when: !is_leaving and (boredom > bystander_boredom_threshold or fear > 0.9) {
+        is_leaving <- true;
+    }
+    
+    reflex leave when: is_leaving {
+        do goto target: {0.0, rnd(0.0, 100.0)} speed: 1.5;
+        if (location.x < 5.0) { do die; }
+    }
+    
+    aspect default {
+        draw circle(1.2) color: is_leaving ? #lightgray : #cyan border: #darkcyan;
+    }
+}
+
+// ==================== EXPERIMENT ====================
+
+experiment ProtestSimulation type: gui {
+    parameter "Protesters A" var: nb_protesters_A min: 5 max: 30;
+    parameter "Protesters B" var: nb_protesters_B min: 5 max: 30;
+    parameter "Police (BDI)" var: nb_police min: 5 max: 20;
+    parameter "Journalists (RL)" var: nb_journalists min: 1 max: 10;
+    parameter "Initial Aggression" var: global_aggression min: 0.2 max: 0.8;
+    parameter "Attack Threshold" var: aggression_attack_threshold min: 0.3 max: 0.7;
+    
+    output {
+        display "Simulation" type: 2d {
+            species ProtestZone;
+            species PoliceCarArea;
+            species AmbulanceArea;
+            species Bystander;
+            species ProtesterA;
+            species ProtesterB;
+            species Police;
+            species Medic;
+            species Journalist;
+        }
+        
+        display "Dynamics" type: 2d refresh: every(5 #cycles) {
+            chart "Aggression & Energy" type: series size: {1.0, 0.5} position: {0, 0} {
+                data "Aggression" value: global_aggression color: #red marker: false;
+                data "Crowd Energy" value: crowd_energy color: #blue marker: false;
+                data "Threshold" value: aggression_attack_threshold color: #gray marker: false style: line;
+            }
+            chart "Event Rates (smoothed)" type: series size: {1.0, 0.5} position: {0, 0.5} {
+                data "Attacks" value: attack_rate color: #red marker: false;
+                data "Arrests" value: arrest_rate color: #blue marker: false;
+                data "Documented" value: doc_rate color: #purple marker: false;
+            }
+        }
+        
+        display "Journalists (Q-Learning)" type: 2d refresh: every(10 #cycles) {
+            chart "Cumulative Rewards" type: series size: {1.0, 0.5} position: {0, 0} {
+                loop j over: Journalist {
+                    data j.name value: j.cumulative_reward color: rnd_color(200) marker: false;
+                }
+            }
+            chart "Documentation vs Hits" type: series size: {1.0, 0.5} position: {0, 0.5} {
+                data "Documented" value: total_documented_events color: #green marker: false;
+                data "Hits" value: journalists_hit color: #red marker: false;
+            }
+        }
+        
+        display "Police (BDI)" type: 2d refresh: every(10 #cycles) {
+            chart "Police Stress Levels" type: series size: {1.0, 0.5} position: {0, 0} {
+                loop p over: Police {
+                    data p.name value: p.stress_level color: rnd_color(200) marker: false;
+                }
+            }
+            chart "BDI Arrests" type: series size: {1.0, 0.5} position: {0, 0.5} {
+                data "Total Arrests" value: total_arrests color: #blue marker: false;
+            }
+        }
+        
+        display "Status" type: 2d refresh: every(10 #cycles) {
+            chart "Protesters" type: pie size: {0.5, 0.5} position: {0, 0} {
+                data "Free A" value: length(ProtesterA where !each.is_detained) color: #red;
+                data "Detained A" value: length(ProtesterA where each.is_detained) color: #pink;
+                data "Free B" value: length(ProtesterB where !each.is_detained) color: #orange;
+                data "Detained B" value: length(ProtesterB where each.is_detained) color: #lightyellow;
+            }
+            chart "Others" type: pie size: {0.5, 0.5} position: {0.5, 0} {
+                data "Active Police" value: length(Police where each.is_active) color: #blue;
+                data "Down Police" value: length(Police where !each.is_active) color: #lightblue;
+                data "Active Journalists" value: length(Journalist where each.is_active) color: #purple;
+                data "Down Journalists" value: length(Journalist where !each.is_active) color: #lavender;
+                data "Bystanders" value: length(Bystander) color: #cyan;
+            }
+            chart "Learning Rate (ε)" type: series size: {1.0, 0.5} position: {0, 0.5} {
+                data "Exploration" value: exploration_rate color: #green marker: false;
+            }
+        }
+        
+        monitor "Cycle" value: cycle;
+        monitor "Aggression" value: int(global_aggression*100);
+        monitor "Energy" value: int(crowd_energy*100);
+        monitor "Attacks" value: total_attacks;
+        monitor "Arrests (BDI)" value: total_arrests;
+        monitor "Documented (RL)" value: total_documented_events;
+        monitor "Journalists Hit" value: journalists_hit;
+        monitor "Detained" value: length(ProtesterA where each.is_detained) + length(ProtesterB where each.is_detained);
+        monitor "Attacking" value: length(ProtesterA where each.is_attacking) + length(ProtesterB where each.is_attacking);
+    }
+}
