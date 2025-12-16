@@ -289,46 +289,28 @@ species Police skills: [moving, fipa] control: simple_bdi {
         // Initial desire: patrol the area
         do add_desire(patrol_desire);
     }
-    
-    // ===== PERCEIVE: Detect violent protesters =====
-    // When police sees a violent ProtesterA, add belief about violence location
-    perceive target: ProtesterA where (each.is_attacking and !each.is_detained) in: view_dist {
-        // 'self' here is the perceived ProtesterA
-        // Store reference before switching context
-        ProtesterA the_criminal <- self;
-        point crime_location <- self.location;
-        
-        focus id: violence_location_str var: location;
-        
-        ask myself {
-            // 'myself' here is the Police agent
-            if (is_active and current_target = nil) {
-                current_target <- the_criminal;
-                target_point <- crime_location;
-                do add_belief(violence_seen);
-                do remove_intention(patrol_desire, false);
-                write name + " [BDI PERCEIVE] Sees violence by " + the_criminal.name;
-            }
-        }
-    }
-    
-    // When police sees a violent ProtesterB
-    perceive target: ProtesterB where (each.is_attacking and !each.is_detained) in: view_dist {
-        ProtesterB the_criminal <- self;
-        point crime_location <- self.location;
-        
-        focus id: violence_location_str var: location;
-        
-        ask myself {
-            if (is_active and current_target = nil) {
-                current_target <- the_criminal;
-                target_point <- crime_location;
-                do add_belief(violence_seen);
-                do remove_intention(patrol_desire, false);
-                write name + " [BDI PERCEIVE] Sees violence by " + the_criminal.name;
-            }
-        }
-    }
+
+	// ===== PERCEIVE: Detect violent protesters =====
+	perceive target: (
+	    (ProtesterA where (each.is_attacking and !each.is_detained)) + 
+	    (ProtesterB where (each.is_attacking and !each.is_detained))
+	) in: view_dist {
+	    agent the_criminal <- self;
+	    point crime_location <- self.location;
+	    
+	    focus id: violence_location_str var: location;
+	    
+	    ask myself {
+	        // 'myself' here is the Police agent
+	        if (is_active and current_target = nil) {
+	            current_target <- the_criminal;
+	            target_point <- crime_location;
+	            do add_belief(violence_seen);
+	            do remove_intention(patrol_desire, false);
+	            write name + " [BDI PERCEIVE] Sees violence by " + the_criminal.name;
+	        }
+	    }
+	}
     
     // ===== RULES: Infer new desires from beliefs =====
     // Rule 1: If see violence -> desire to pursue (strength 3)
@@ -564,9 +546,9 @@ species Police skills: [moving, fipa] control: simple_bdi {
     }
 }
 
-// ==================== PROTESTER A ====================
-
-species ProtesterA skills: [moving] {
+// ==================== PROTESTER BASE ====================
+species Protester skills: [moving] {
+    // Shared attributes
     float aggression <- rnd(0.5, 0.85);
     float courage <- rnd(0.4, 0.8);
     
@@ -579,6 +561,17 @@ species ProtesterA skills: [moving] {
     int attack_timer <- 0;
     
     float perception_radius <- 12.0;
+    
+    
+    // Abstract method to get rival group
+    list<agent> get_rival_targets {
+        return [];
+    }
+    
+    // Abstract method to check if target is rival and detained
+    bool is_rival_detained(agent target) {
+        return false;
+    }
     
     reflex update_detention when: is_detained {
         detention_timer <- detention_timer - 1.0;
@@ -599,14 +592,16 @@ species ProtesterA skills: [moving] {
             float r <- rnd(0.0, 1.0);
             
             if (r < 0.4) {
-                list<ProtesterB> targets <- ProtesterB at_distance(perception_radius) where (!each.is_detained);
+                // Attack rival group
+                list<agent> targets <- get_rival_targets();
                 if (!empty(targets)) {
                     attack_target <- one_of(targets);
                     is_attacking <- true;
                     attack_timer <- rnd(15, 40);
-                    write name + " attacks Group B!";
+                    write name + " attacks rival group!";
                 }
             } else if (r < 0.6 and courage > 0.5) {
+                // Attack police
                 list<Police> targets <- Police at_distance(perception_radius) where (each.is_active);
                 if (!empty(targets)) {
                     attack_target <- one_of(targets);
@@ -615,6 +610,7 @@ species ProtesterA skills: [moving] {
                     write name + " attacks POLICE!";
                 }
             } else if (r < 0.8) {
+                // Attack journalist
                 list<Journalist> targets <- Journalist at_distance(perception_radius) where (each.is_active);
                 if (!empty(targets)) {
                     attack_target <- one_of(targets);
@@ -635,7 +631,8 @@ species ProtesterA skills: [moving] {
             return;
         }
         
-        if (attack_target is ProtesterB and ProtesterB(attack_target).is_detained) {
+        // Check if rival protester is detained
+        if (is_rival_detained(attack_target)) {
             is_attacking <- false;
             attack_target <- nil;
             return;
@@ -658,9 +655,10 @@ species ProtesterA skills: [moving] {
                 ask Police(attack_target) { do get_hit; }
                 write "!!! " + name + " HITS POLICE !!!";
             }
-        } else if (attack_target is ProtesterB) {
-            ProtesterB(attack_target).health <- ProtesterB(attack_target).health - 0.1;
-            ProtesterB(attack_target).is_injured <- ProtesterB(attack_target).health < 0.5;
+        } else if (attack_target is Protester) {
+            // Hit rival protester
+            Protester(attack_target).health <- Protester(attack_target).health - 0.1;
+            Protester(attack_target).is_injured <- Protester(attack_target).health < 0.5;
         } else if (attack_target is Journalist) {
             if (rnd(0.0, 1.0) < 0.4) {
                 ask Journalist(attack_target) { do get_hit; }
@@ -670,6 +668,18 @@ species ProtesterA skills: [moving] {
         }
         
         aggression <- max(0.4, aggression - 0.02);
+    }
+}
+
+// ==================== PROTESTER A ====================
+
+species ProtesterA parent: Protester {
+    list<agent> get_rival_targets {
+        return ProtesterB at_distance(perception_radius) where (!each.is_detained);
+    }
+    
+    bool is_rival_detained(agent target) {
+        return (target is ProtesterB) and ProtesterB(target).is_detained;
     }
     
     aspect default {
@@ -684,110 +694,13 @@ species ProtesterA skills: [moving] {
 
 // ==================== PROTESTER B ====================
 
-species ProtesterB skills: [moving] {
-    float aggression <- rnd(0.5, 0.85);
-    float courage <- rnd(0.4, 0.8);
-    
-    bool is_attacking <- false;
-    bool is_detained <- false;
-    bool is_injured <- false;
-    float health <- 1.0;
-    float detention_timer <- 0.0;
-    agent attack_target <- nil;
-    int attack_timer <- 0;
-    
-    float perception_radius <- 12.0;
-    
-    reflex update_detention when: is_detained {
-        detention_timer <- detention_timer - 1.0;
+species ProtesterB parent: Protester {
+    list<agent> get_rival_targets {
+        return ProtesterA at_distance(perception_radius) where (!each.is_detained);
     }
     
-    reflex wander when: !is_detained and !is_attacking {
-        if (self distance_to protest_center > protest_radius + 5) {
-            do goto target: protest_center speed: 1.0;
-        } else {
-            do wander amplitude: 30.0 speed: 0.5;
-        }
-    }
-    
-    reflex maybe_attack when: !is_detained and !is_attacking and mod(cycle, 3) = 0 {
-        float effective_agg <- (aggression * 0.6) + (global_aggression * 0.4);
-        
-        if (effective_agg > aggression_attack_threshold and rnd(0.0, 1.0) < 0.3) {
-            float r <- rnd(0.0, 1.0);
-            
-            if (r < 0.4) {
-                list<ProtesterA> targets <- ProtesterA at_distance(perception_radius) where (!each.is_detained);
-                if (!empty(targets)) {
-                    attack_target <- one_of(targets);
-                    is_attacking <- true;
-                    attack_timer <- rnd(15, 40);
-                    write name + " attacks Group A!";
-                }
-            } else if (r < 0.6 and courage > 0.5) {
-                list<Police> targets <- Police at_distance(perception_radius) where (each.is_active);
-                if (!empty(targets)) {
-                    attack_target <- one_of(targets);
-                    is_attacking <- true;
-                    attack_timer <- rnd(10, 25);
-                    write name + " attacks POLICE!";
-                }
-            } else if (r < 0.8) {
-                list<Journalist> targets <- Journalist at_distance(perception_radius) where (each.is_active);
-                if (!empty(targets)) {
-                    attack_target <- one_of(targets);
-                    is_attacking <- true;
-                    attack_timer <- rnd(8, 20);
-                    write name + " attacks JOURNALIST!";
-                }
-            }
-        }
-    }
-    
-    reflex do_attack when: is_attacking and !is_detained {
-        attack_timer <- attack_timer - 1;
-        
-        if (attack_target = nil or dead(attack_target) or attack_timer <= 0) {
-            is_attacking <- false;
-            attack_target <- nil;
-            return;
-        }
-        
-        if (attack_target is ProtesterA and ProtesterA(attack_target).is_detained) {
-            is_attacking <- false;
-            attack_target <- nil;
-            return;
-        }
-        
-        do goto target: attack_target speed: 2.0;
-        
-        if (self distance_to attack_target < 2.0) {
-            do hit_target;
-        }
-    }
-    
-    action hit_target {
-        total_attacks <- total_attacks + 1;
-        attack_rate <- attack_rate + 3.0;
-        global_aggression <- min(0.9, global_aggression + 0.01);
-        
-        if (attack_target is Police) {
-            if (rnd(0.0, 1.0) < 0.15) {
-                ask Police(attack_target) { do get_hit; }
-                write "!!! " + name + " HITS POLICE !!!";
-            }
-        } else if (attack_target is ProtesterA) {
-            ProtesterA(attack_target).health <- ProtesterA(attack_target).health - 0.1;
-            ProtesterA(attack_target).is_injured <- ProtesterA(attack_target).health < 0.5;
-        } else if (attack_target is Journalist) {
-            if (rnd(0.0, 1.0) < 0.4) {
-                ask Journalist(attack_target) { do get_hit; }
-                journalists_hit <- journalists_hit + 1;
-                write "!!! " + name + " HITS JOURNALIST !!!";
-            }
-        }
-        
-        aggression <- max(0.4, aggression - 0.02);
+    bool is_rival_detained(agent target) {
+        return (target is ProtesterA) and ProtesterA(target).is_detained;
     }
     
     aspect default {
@@ -799,6 +712,8 @@ species ProtesterB skills: [moving] {
         draw "B" at: location color: #black font: font("Arial", 8, #bold);
     }
 }
+
+
 
 // ==================== MEDIC ====================
 
@@ -812,26 +727,24 @@ species Medic skills: [moving] {
     int recovery_timer <- 0;
     
     reflex find_injured when: !is_recovering and heal_target = nil {
-        list<ProtesterA> injured_A <- ProtesterA at_distance(25.0) where (each.is_injured and !each.is_detained);
-        list<ProtesterB> injured_B <- ProtesterB at_distance(25.0) where (each.is_injured and !each.is_detained);
+        list<Protester> injured <- Protester at_distance(25.0) where (each.is_injured and !each.is_detained);
         
-        if (!empty(injured_A)) { heal_target <- injured_A with_min_of(each.health); }
-        else if (!empty(injured_B)) { heal_target <- injured_B with_min_of(each.health); }
+        if (!empty(injured)) { 
+        	heal_target <- injured with_min_of(each.health);
+        }
     }
     
     reflex heal when: heal_target != nil and !is_recovering {
-        if (dead(heal_target)) { heal_target <- nil; return; }
+        if (dead(heal_target)) { 
+        	heal_target <- nil; 
+        	return;
+        }
         
         do goto target: heal_target speed: 1.5;
         
         if (self distance_to heal_target < 2.0) {
-            if (heal_target is ProtesterA) {
-                ProtesterA(heal_target).health <- min(1.0, ProtesterA(heal_target).health + 0.3);
-                ProtesterA(heal_target).is_injured <- ProtesterA(heal_target).health < 0.5;
-            } else {
-                ProtesterB(heal_target).health <- min(1.0, ProtesterB(heal_target).health + 0.3);
-                ProtesterB(heal_target).is_injured <- ProtesterB(heal_target).health < 0.5;
-            }
+        	Protester(heal_target).health <- min(1.0, Protester(heal_target).health + 0.3);
+            Protester(heal_target).is_injured <- Protester(heal_target).health < 0.5;
             exhaustion <- exhaustion + 0.15;
             heal_target <- nil;
         }
@@ -909,26 +822,28 @@ species Journalist skills: [moving] {
         float min_d <- 999.0;
         string etype <- "none";
         
-        ask ProtesterA where each.is_attacking {
+        ask Protester where each.is_attacking {
             float d <- myself distance_to self;
-            if (d < min_d) { min_d <- d; etype <- "attack"; }
+            if (d < min_d) {
+            	min_d <- d; 
+            	etype <- "attack";
+            }
         }
-        ask ProtesterB where each.is_attacking {
-            float d <- myself distance_to self;
-            if (d < min_d) { min_d <- d; etype <- "attack"; }
-        }
+        
         ask Police where (each.current_target != nil) {
             float d <- myself distance_to self;
-            if (d < min_d) { min_d <- d; etype <- "arrest"; }
+            if (d < min_d) { 
+            	min_d <- d; 
+            	etype <- "arrest";
+            }
         }
         
         string ds <- "far";
         if (min_d < 5) { ds <- "vclose"; }
         else if (min_d < 12) { ds <- "close"; }
         else if (min_d < 25) { ds <- "med"; }
-        
-        int nearby <- length(ProtesterA at_distance(8.0) where each.is_attacking) +
-                      length(ProtesterB at_distance(8.0) where each.is_attacking);
+                      
+        int nearby <- length(Protester at_distance(8.0) where each.is_attacking);
         string danger <- "safe";
         if (nearby >= 2) { danger <- "danger"; }
         else if (nearby >= 1) { danger <- "mod"; }
@@ -940,18 +855,22 @@ species Journalist skills: [moving] {
         float min_d <- 999.0;
         point loc <- nil;
         
-        ask ProtesterA where each.is_attacking {
+        ask Protester where each.is_attacking {
             float d <- myself distance_to self;
-            if (d < min_d) { min_d <- d; loc <- self.location; }
+            if (d < min_d) { 
+            	min_d <- d; 
+            	loc <- self.location;
+            }
         }
-        ask ProtesterB where each.is_attacking {
-            float d <- myself distance_to self;
-            if (d < min_d) { min_d <- d; loc <- self.location; }
-        }
+        
         ask Police where (each.current_target != nil) {
             float d <- myself distance_to self;
-            if (d < min_d) { min_d <- d; loc <- self.location; }
+            if (d < min_d) {
+            	min_d <- d; 
+            	loc <- self.location;
+            }
         }
+        
         return loc;
     }
     
@@ -966,7 +885,10 @@ species Journalist skills: [moving] {
         float best_v <- get_q(s, "closer");
         loop a over: acts {
             float v <- get_q(s, a);
-            if (v > best_v) { best_v <- v; best <- a; }
+            if (v > best_v) { 
+            	best_v <- v; 
+            	best <- a;
+            }
         }
         return best;
     }
@@ -976,7 +898,9 @@ species Journalist skills: [moving] {
         float m <- -9999.0;
         loop a over: acts {
             float v <- get_q(s, a);
-            if (v > m) { m <- v; }
+            if (v > m) { 
+            	m <- v;
+            }
         }
         return m;
     }
@@ -1098,13 +1022,15 @@ species Bystander skills: [moving] {
     
     reflex observe when: !is_leaving {
         int activity <- length(Police at_distance(15.0)) + 
-                        length(ProtesterA at_distance(15.0) where each.is_attacking) +
-                        length(ProtesterB at_distance(15.0) where each.is_attacking);
+                        length(Protester at_distance(15.0) where each.is_attacking);
         
         if (activity > 0) {
             boredom <- max(0.0, boredom - 0.02 * activity);
             int arrests <- length(Police at_distance(15.0) where (each.current_target != nil));
-            if (arrests > 0) { fear <- min(1.0, fear + 0.1); boredom <- boredom + 0.03; }
+            if (arrests > 0) { 
+            	fear <- min(1.0, fear + 0.1); 
+            	boredom <- boredom + 0.03;
+            }
         } else {
             boredom <- boredom + 0.008;
         }
