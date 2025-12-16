@@ -61,6 +61,8 @@ global {
     
     
     init {
+        create IncidentCoordinator number: 1;
+
         create PoliceCarArea number: 1 {
             location <- police_car_location;
         }
@@ -125,91 +127,27 @@ global {
         write ">>> Tension rises! +" + int(increase*100) + "%";
     }
     
-    // major incident, causing jump in aggression
-    reflex major_incident when: mod(cycle, 200) = 0 and rnd(0.0, 1.0) < 0.3 {
-        global_aggression <- min(0.9, global_aggression + 0.2);
-        
-        // 4 protestors from each group get individual 20% aggression violence
-        ask 4 among (ProtesterA where !each.is_detained) {
-            aggression <- min(0.95, aggression + 0.2);
-        }
-        ask 4 among (ProtesterB where !each.is_detained) {
-            aggression <- min(0.95, aggression + 0.2);
-        }
-        write "!!! MAJOR INCIDENT !!!";
-    }
-    
-    // each protestor's aggression increases
-    reflex increase_frustration when: mod(cycle, 30) = 0 {
-        ask Protester where (!each.is_detained) {
-            aggression <- min(0.9, aggression + rnd(0.01, 0.03));
-        }
-    }
-    
-    // release prisoners once they've served their time
-    reflex release_prisoners when: mod(cycle, 10) = 0 {
-	    list<agent> detainees <- (ProtesterA where (each.is_detained and each.detention_timer <= 0))
-                           + (ProtesterB where (each.is_detained and each.detention_timer <= 0));
-
-	    ask detainees {
-	        Protester p <- Protester(self);
-	        p.is_detained <- false;
-	        p.detention_timer <- 0.0;
-	        p.location <- protest_center + {rnd(-protest_radius, protest_radius),
-	                                        rnd(-protest_radius, protest_radius)};
-	        p.aggression <- rnd(0.4, 0.7);
-	        write p.name + " released";
-	    }
-	}
-    
     reflex spawn_bystanders when: length(Bystander) < 5 and mod(cycle, 50) = 0 {
         create Bystander number: 2 {
             location <- {rnd(80.0, 100.0), rnd(0.0, 100.0)};
         }
     }
-    
-    // revive officers who were hit by protestors
-    reflex respawn_police when: mod(cycle, 100) = 0 {
-        ask Police where (!each.is_active) {
-            is_active <- true;
-            was_hit <- false;
-            stress_level <- 0.3;
-            location <- police_car_location;
-            target_point <- nil;
-            current_target <- nil;
-            
-            // reset BDI state
-            // beliefs
-            do remove_belief(violence_seen);
-            do remove_belief(need_rest_belief);
-            
-            // desires
-            do remove_desire(patrol_desire);
-            do remove_desire(pursue_desire);
-            do remove_desire(arrest_desire);
-            do remove_desire(rest_desire);
-            
-            // intentions
-            do remove_intention(patrol_desire, true);
-            do remove_intention(pursue_desire, true);
-            do remove_intention(arrest_desire, true);
-            do remove_intention(rest_desire, true);
-            
-            // add back base patrol desire
-            do add_desire(patrol_desire);
-            
-            write name + " back on duty";
+}
+
+// ==================== HELPER AGENTS ====================
+
+species IncidentCoordinator skills: [fipa] {
+    reflex major_incident when: mod(cycle, 200) = 0 and rnd(0.0, 1.0) < 0.3 {
+        global_aggression <- min(0.9, global_aggression + 0.2);
+
+        // 4 protestors from each group get individual 20% aggression boost via FIPA
+        list<Protester> targets <- (4 among (ProtesterA where !each.is_detained)) +
+                                   (4 among (ProtesterB where !each.is_detained));
+        if (!empty(targets)) {
+            do start_conversation to: list(targets) protocol: 'fipa-request' performative: 'request'
+                contents: ["aggression_boost", 0.2];
         }
-    }
-    
-    // revive journalists who were hit by protestors
-    reflex respawn_journalists when: mod(cycle, 120) = 0 {
-        ask Journalist where (!each.is_active) {
-            is_active <- true;
-            was_hit <- false;
-            location <- protest_center + {rnd(-10.0, 10.0), rnd(15.0, 25.0)};
-            write name + " recovered";
-        }
+        write "!!! MAJOR INCIDENT !!!";
     }
 }
 
@@ -260,14 +198,14 @@ species Police skills: [moving, fipa] control: simple_bdi {
 
 	// PERCEIVE: detect violent protestors
 	perceive target: (
-	    (ProtesterA where (each.is_attacking and !each.is_detained)) + 
+	    (ProtesterA where (each.is_attacking and !each.is_detained)) +
 	    (ProtesterB where (each.is_attacking and !each.is_detained))
 	) in: view_dist {
 	    agent the_criminal <- self;
 	    point crime_location <- self.location;
-	    
+
 	    focus id: violence_location_str var: location;
-	    
+
 	    ask myself {
 	        // 'myself' here is the Police agent
 	        if (is_active and current_target = nil) {
@@ -416,15 +354,14 @@ species Police skills: [moving, fipa] control: simple_bdi {
             list<Police> available <- (Police at_distance(50.0)) where (each.is_active and each != self and each.current_target = nil);
             if (length(available) >= 1) {
                 list<Police> helpers <- 2 among available;
-                do start_conversation to: list(helpers) protocol: 'fipa-request' performative: 'request' 
+                do start_conversation to: list(helpers) protocol: 'fipa-request' performative: 'request'
                     contents: ["backup_needed", target_point];
                 point rounded_target <- { round(target_point.x), round(target_point.y) };
                 write name + " requesting backup at " + rounded_target;
             }
         }
     }
-    
-    // handle FIPA backup requests
+
     reflex handle_fipa_messages when: !empty(requests) {
         loop msg over: requests {
             list msg_content <- list(msg.contents);
@@ -434,11 +371,19 @@ species Police skills: [moving, fipa] control: simple_bdi {
                 do add_belief(violence_seen);
                 write name + " responding to backup request";
                 do agree message: msg contents: ["on_my_way"];
+            } else if (string(msg_content[0]) = "hit") {
+                do get_hit;
+            } else if (string(msg_content[0]) = "status_query") {
+                if (current_target != nil and is_active) {
+                    do agree message: msg contents: ["status", "arrest", location];
+                } else {
+                    do agree message: msg contents: ["status", "idle", nil];
+                }
             }
         }
         requests <- [];
     }
-    
+
     // get hit by protester
     action get_hit {
         was_hit <- true;
@@ -459,6 +404,38 @@ species Police skills: [moving, fipa] control: simple_bdi {
         do remove_intention(rest_desire, true);
         
         write "!!! POLICE " + name + " DOWN !!!";
+    }
+
+    // revive officers who were hit by protestors
+    reflex respawn when: mod(cycle, 100) = 0 and !is_active {
+        is_active <- true;
+        was_hit <- false;
+        stress_level <- 0.3;
+        location <- police_car_location;
+        target_point <- nil;
+        current_target <- nil;
+        
+        // reset BDI state
+        // beliefs
+        do remove_belief(violence_seen);
+        do remove_belief(need_rest_belief);
+        
+        // desires
+        do remove_desire(patrol_desire);
+        do remove_desire(pursue_desire);
+        do remove_desire(arrest_desire);
+        do remove_desire(rest_desire);
+        
+        // intentions
+        do remove_intention(patrol_desire, true);
+        do remove_intention(pursue_desire, true);
+        do remove_intention(arrest_desire, true);
+        do remove_intention(rest_desire, true);
+        
+        // add back base patrol desire
+        do add_desire(patrol_desire);
+        
+        write name + " back on duty";
     }
     
     aspect default {
@@ -482,7 +459,7 @@ species Police skills: [moving, fipa] control: simple_bdi {
 }
 
 // ==================== PROTESTER BASE ====================
-species Protester skills: [moving] {
+species Protester skills: [moving, fipa] {
     float aggression <- rnd(0.5, 0.85);
     float courage <- rnd(0.4, 0.8);	// willingness to attack police
     
@@ -510,6 +487,23 @@ species Protester skills: [moving] {
     reflex update_detention when: is_detained {
         detention_timer <- detention_timer - 1.0;
     }
+
+    reflex handle_fipa_requests when: !empty(requests) {
+        loop msg over: requests {
+            list msg_content <- list(msg.contents);
+            if (string(msg_content[0]) = "aggression_boost") {
+                float boost <- float(msg_content[1]);
+                aggression <- min(0.95, aggression + boost);
+            } else if (string(msg_content[0]) = "status_query") {
+                if (is_attacking and !is_detained) {
+                    do agree message: msg contents: ["status", "attack", location];
+                } else {
+                    do agree message: msg contents: ["status", "idle", nil];
+                }
+            }
+        }
+        requests <- [];
+    }
     
     // when not attacking, simply wanders around protest center
     reflex wander when: !is_detained and !is_attacking {
@@ -522,10 +516,10 @@ species Protester skills: [moving] {
     
     reflex maybe_attack when: !is_detained and !is_attacking and mod(cycle, 3) = 0 {
         float effective_agg <- (aggression * 0.6) + (global_aggression * 0.4);
-        
+
         if (effective_agg > aggression_attack_threshold and rnd(0.0, 1.0) < 0.3) {
             float r <- rnd(0.0, 1.0);
-            
+
             if (r < 0.4) {
                 // attack rival group
                 list<agent> targets <- get_rival_targets();
@@ -584,13 +578,12 @@ species Protester skills: [moving] {
         total_attacks <- total_attacks + 1;
         attack_rate <- attack_rate + 3.0;
         global_aggression <- min(0.9, global_aggression + 0.01);
-        
+
         if (attack_target is Police) {
-        	// hit police
+            // hit police via FIPA
             if (rnd(0.0, 1.0) < 0.15) {
-                ask Police(attack_target) { 
-                	do get_hit;
-                }
+                do start_conversation to: [attack_target] protocol: 'fipa-request' performative: 'request'
+                    contents: ["hit"];
                 write "!!! " + name + " HITS POLICE !!!";
             }
         } else if (attack_target is Protester) {
@@ -598,17 +591,31 @@ species Protester skills: [moving] {
             Protester(attack_target).health <- Protester(attack_target).health - 0.1;
             Protester(attack_target).is_injured <- Protester(attack_target).health < 0.5;
         } else if (attack_target is Journalist) {
-        	// hit journalist
+            // hit journalist via FIPA
             if (rnd(0.0, 1.0) < 0.4) {
-                ask Journalist(attack_target) { 
-                	do get_hit;
-                }
+                do start_conversation to: [attack_target] protocol: 'fipa-request' performative: 'request'
+                    contents: ["hit"];
                 journalists_hit <- journalists_hit + 1;
                 write "!!! " + name + " HITS JOURNALIST !!!";
             }
         }
         
         aggression <- max(0.4, aggression - 0.02);
+    }
+
+    // each protestor's aggression increases
+    reflex increase_frustration when: mod(cycle, 30) = 0 and !is_detained {
+        aggression <- min(0.9, aggression + rnd(0.01, 0.03));
+    }
+
+    // release prisoners once they've served their time
+    reflex release_self when: is_detained and detention_timer <= 0 {
+        is_detained <- false;
+        detention_timer <- 0.0;
+        location <- protest_center + {rnd(-protest_radius, protest_radius),
+                                      rnd(-protest_radius, protest_radius)};
+        aggression <- rnd(0.4, 0.7);
+        write name + " released";
     }
 }
 
@@ -734,7 +741,7 @@ species Medic skills: [moving] {
 // implements Q-learning reinforcement learning algorithm: wants to maximize reward by getting as close as possible
 // when documenting events, while avoiding getting hit by a violent protestor
 
-species Journalist skills: [moving] {
+species Journalist skills: [moving, fipa] {
     float experience <- rnd(0.6, 0.95);	// probability of successfully documenting
     float speed_mult <- rnd(0.9, 1.1);
     
@@ -770,77 +777,77 @@ species Journalist skills: [moving] {
     }
     
     int count_events {
-        return length(Protester where each.is_attacking) + 
+        return length(Protester where each.is_attacking) +
                length(Police where (each.current_target != nil));
     }
-    
+
+    list<list> status_responses <- [];
+    float closest_event_dist <- 999.0;
+    string closest_event_type <- "none";
+    point closest_event_loc <- nil;
+
+    // send status queries to all protestors and police (~20% chance per cycle)
+    reflex query_status when: is_active and rnd(0.0, 1.0) < 0.2 {
+        status_responses <- [];  // clear previous responses
+        list<agent> targets <- list(Protester) + list(Police);
+        if (!empty(targets)) {
+            do start_conversation to: targets protocol: 'fipa-request' performative: 'request'
+                contents: ["status_query"];
+        }
+    }
+
+    reflex collect_status_responses when: !empty(agrees) {
+        loop msg over: agrees {
+            list msg_content <- list(msg.contents);
+            if (string(msg_content[0]) = "status") {
+                status_responses <- status_responses + [msg_content];
+            }
+        }
+        agrees <- [];
+    }
+
+    action find_closest_event {
+        closest_event_dist <- 999.0;
+        closest_event_type <- "none";
+        closest_event_loc <- nil;
+
+        loop resp over: status_responses {
+            string status_type <- string(resp[1]);
+            if (status_type != "idle" and resp[2] != nil) {
+                point evt_loc <- point(resp[2]);
+                float d <- self distance_to evt_loc;
+                if (d < closest_event_dist) {
+                    closest_event_dist <- d;
+                    closest_event_type <- status_type;
+                    closest_event_loc <- evt_loc;
+                }
+            }
+        }
+    }
+
+    // returns state string using cached closest event info (call find_closest_event first)
     string get_state {
-        float min_d <- 999.0;
-        string etype <- "none";
-        
-        // find closest event currently happening
-        ask Protester where each.is_attacking {
-            float d <- myself distance_to self;
-            if (d < min_d) {
-            	min_d <- d; 
-            	etype <- "attack";
-            }
-        }
-        ask Police where (each.current_target != nil) {
-            float d <- myself distance_to self;
-            if (d < min_d) { 
-            	min_d <- d; 
-            	etype <- "arrest";
-            }
-        }
-        
-        // get distance from closest event
+        // get distance category from closest event
         string ds <- "far";
-        if (min_d < 5) { 
-        	ds <- "vclose";
+        if (closest_event_dist < 5) {
+            ds <- "vclose";
+        } else if (closest_event_dist < 12) {
+            ds <- "close";
+        } else if (closest_event_dist < 25) {
+            ds <- "med";
         }
-        else if (min_d < 12) { 
-        	ds <- "close";
-        }
-        else if (min_d < 25) { 
-        	ds <- "med";
-        }
-                      
+
         // determine danger to journalist based on how many attacking protestors in vicinity
         int nearby <- length(Protester at_distance(8.0) where each.is_attacking);
         string danger <- "safe";
-        if (nearby >= 2) { 
-        	danger <- "danger";
+        if (nearby >= 2) {
+            danger <- "danger";
+        } else if (nearby >= 1) {
+            danger <- "mod";
         }
-        else if (nearby >= 1) { 
-        	danger <- "mod";
-        }
-        
+
         // return string described state
-        return ds + "_" + danger + "_" + etype;
-    }
-    
-    // get location of closest event (to move towards or away from)
-    point get_event_loc {
-        float min_d <- 999.0;
-        point loc <- nil;
-        
-        ask Protester where each.is_attacking {
-            float d <- myself distance_to self;
-            if (d < min_d) { 
-            	min_d <- d; 
-            	loc <- self.location;
-            }
-        }
-        ask Police where (each.current_target != nil) {
-            float d <- myself distance_to self;
-            if (d < min_d) {
-            	min_d <- d; 
-            	loc <- self.location;
-            }
-        }
-        
-        return loc;
+        return ds + "_" + danger + "_" + closest_event_type;
     }
     
     // get expected reward of state-action pair
@@ -879,8 +886,9 @@ species Journalist skills: [moving] {
     
     // main Q-Learning loop
     reflex q_step when: is_active {
+        do find_closest_event;
         string state <- get_state();
-        
+
         // epsilon-greedy action selection: with probability epsilon, the journalist explores/takes a random action; with probability 1-epsilon,
         // the jorunalist exploits his prior experiences to choose the action with the highest reward for the current state
         string chosen_act;
@@ -889,29 +897,27 @@ species Journalist skills: [moving] {
         } else {
             chosen_act <- best_action(state);
         }
-        
-        point evt <- get_event_loc();
-        bool has_evt <- (evt != nil);
+
+        bool has_evt <- (closest_event_loc != nil);
         bool did_doc <- false;
         is_documenting <- false;
         
         // execute action
         if (chosen_act = "closer") {
-            if (has_evt) { 
-            	do goto target: evt speed: 2.0 * speed_mult;
-            }
-            else { 
-            	do goto target: protest_center speed: 1.0 * speed_mult;
+            if (has_evt) {
+                do goto target: closest_event_loc speed: 2.0 * speed_mult;
+            } else {
+                do goto target: protest_center speed: 1.0 * speed_mult;
             }
         } else if (chosen_act = "away") {
             if (has_evt) {
-                do goto target: location + (location - evt) speed: 2.5 * speed_mult;
+                do goto target: location + (location - closest_event_loc) speed: 2.5 * speed_mult;
             } else {
                 do wander amplitude: 20.0 speed: 1.0;
             }
         } else if (chosen_act = "document") {
             if (has_evt) {
-                float d <- self distance_to evt;
+                float d <- self distance_to closest_event_loc;
                 // if they were close enough and deemed to have have enough experience (random number against threshold), document event
                 if (d < 20.0 and rnd(0.0, 1.0) < experience) {
                     did_doc <- true;
@@ -953,9 +959,9 @@ species Journalist skills: [moving] {
         }
         
         if (has_evt and !did_doc and chosen_act != "flee") {
-            float d <- self distance_to evt;
-            if (d < 15) { 
-            	reward <- reward + 1.0;
+            float d <- self distance_to closest_event_loc;
+            if (d < 15) {
+                reward <- reward + 1.0;
             }
         }
         
@@ -980,7 +986,18 @@ species Journalist skills: [moving] {
     reflex idle_wander when: is_active and count_events() = 0 {
         do wander amplitude: 15.0 speed: 0.6;
     }
-    
+
+    // handle FIPA messages for being hit
+    reflex handle_fipa_messages when: !empty(requests) {
+        loop msg over: requests {
+            list msg_content <- list(msg.contents);
+            if (string(msg_content[0]) = "hit") {
+                do get_hit;
+            }
+        }
+        requests <- [];
+    }
+
     action get_hit {
         was_hit <- true;
         hits <- hits + 1;
@@ -990,6 +1007,14 @@ species Journalist skills: [moving] {
         } else {
             write name + " hit but continues";
         }
+    }
+
+    // revive journalists who were hit by protestors
+    reflex revive_self when: !is_active and mod(cycle, 120) = 0 {
+        is_active <- true;
+        was_hit <- false;
+        location <- protest_center + {rnd(-10.0, 10.0), rnd(15.0, 25.0)};
+        write name + " recovered";
     }
     
     aspect default {
