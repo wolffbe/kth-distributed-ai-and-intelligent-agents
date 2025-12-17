@@ -115,7 +115,8 @@ global {
     // presence of police and high arrest count decreases global crowd aggression
     reflex police_calming when: mod(cycle, 20) = 0 {
         int active_police <- length(Police where each.is_active);
-        int detained_count <- length(Protester where each.is_detained);
+        int detained_count <- length((ProtesterA where each.is_detained) + 
+       								(ProtesterB where each.is_detained));
         float deterrent <- (active_police * 0.003) + (detained_count * 0.005);
         global_aggression <- max(0.25, global_aggression - deterrent);
     }
@@ -242,8 +243,12 @@ species Police skills: [moving, fipa] control: simple_bdi {
         
         // check if need rest
         if (stress_level > police_stress_threshold) {
-            do add_belief(need_rest_belief);
-            write name + " stress high (" + int(stress_level*100) + "%) -> needs rest";
+        	// only print once
+        	if (!has_belief(need_rest_belief)) {
+        		do add_belief(need_rest_belief);
+            	write name + " stress high (" + int(stress_level*100) + "%) -> needs rest";
+        	}
+            
         }
     }
     
@@ -679,7 +684,6 @@ species ProtesterB parent: Protester {
 
 species Medic skills: [moving] {
     float exhaustion <- 0.0;
-    float skill_level <- rnd(0.5, 1.0);
     
     bool is_recovering <- false;
     agent heal_target <- nil;
@@ -687,12 +691,13 @@ species Medic skills: [moving] {
     int recovery_timer <- 0;
     
     reflex find_injured when: !is_recovering and heal_target = nil {
-        list<Protester> injured <- Protester at_distance(25.0) where (each.is_injured and !each.is_detained);
-        
-        if (!empty(injured)) { 
-        	heal_target <- injured with_min_of(each.health);
-        }
-    }
+	    list<Protester> all_injured <- ProtesterA where (each.is_attacking and !each.is_detained) +
+	    	ProtesterB where (each.is_attacking and !each.is_detained);
+	    
+	    if (!empty(all_injured)) {
+	        heal_target <- all_injured with_min_of(Protester(each).health);
+	    }
+	}
     
     reflex heal when: heal_target != nil and !is_recovering {
         if (dead(heal_target)) { 
@@ -714,7 +719,7 @@ species Medic skills: [moving] {
         do wander amplitude: 45.0 speed: 0.8;
     }
     
-    // needs to recover if becomes too exhausted
+    // needs to recover if becomes too exhausted (happens after healing an injured protester)
     reflex check_exhaustion when: exhaustion > medic_exhaustion_threshold and !is_recovering {
         is_recovering <- true;
         recovery_timer <- 40;	// recovers for 40 cycles
@@ -777,7 +782,8 @@ species Journalist skills: [moving, fipa] {
     }
     
     int count_events {
-        return length(Protester where each.is_attacking) +
+        return length((ProtesterA where each.is_attacking) + 
+       				(ProtesterB where each.is_attacking)) +
                length(Police where (each.current_target != nil));
     }
 
@@ -789,7 +795,7 @@ species Journalist skills: [moving, fipa] {
     // send status queries to all protestors and police (~20% chance per cycle)
     reflex query_status when: is_active and rnd(0.0, 1.0) < 0.2 {
         status_responses <- [];  // clear previous responses
-        list<agent> targets <- list(Protester) + list(Police);
+        list<agent> targets <- list(ProtesterA) + list(ProtesterB) + list(Police);
         if (!empty(targets)) {
             do start_conversation to: targets protocol: 'fipa-request' performative: 'request'
                 contents: ["status_query"];
@@ -838,7 +844,8 @@ species Journalist skills: [moving, fipa] {
         }
 
         // determine danger to journalist based on how many attacking protestors in vicinity
-        int nearby <- length(Protester at_distance(8.0) where each.is_attacking);
+        int nearby <- length((ProtesterA at_distance(8.0) where each.is_attacking) + 
+       						(ProtesterB at_distance(8.0) where each.is_attacking));
         string danger <- "safe";
         if (nearby >= 2) {
             danger <- "danger";
@@ -1037,7 +1044,8 @@ species Bystander skills: [moving] {
     
     reflex observe when: !is_leaving {
         int activity <- length(Police at_distance(15.0)) + 
-                        length(Protester at_distance(15.0) where each.is_attacking);
+                        length((ProtesterA at_distance(15.0) where each.is_attacking) + 
+       							(ProtesterB at_distance(8.0) where each.is_attacking));
         
         if (activity > 0) {
             boredom <- max(0.0, boredom - 0.02 * activity);
