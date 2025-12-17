@@ -181,7 +181,7 @@ species Police skills: [moving, fipa] control: simple_bdi {
     float stress_level <- rnd(0.2, 0.5);    // increases during pursuits/arrests
     float patience <- rnd(0.4, 0.9);         // higher patience means slower stress buildup
     
-    float view_dist <- 25.0;                 // perception radius
+    float view_dist <- 12.5;                 // perception radius
     float my_speed <- 2.0;
     
     bool is_active <- true;
