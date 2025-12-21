@@ -56,7 +56,6 @@ global {
     // desires
     predicate patrol_desire <- new_predicate("patrol");
     predicate pursue_desire <- new_predicate("pursue_criminal");
-    predicate arrest_desire <- new_predicate("arrest_criminal");
     predicate rest_desire <- new_predicate("rest_at_base");
     
     
@@ -344,10 +343,8 @@ species Police skills: [moving, fipa] control: simple_bdi {
         target_point <- nil;
         do remove_belief(violence_seen);
         do remove_intention(pursue_desire, true);
-        do remove_intention(arrest_desire, true);
         do remove_desire(pursue_desire);
-        do remove_desire(arrest_desire);
-        
+
         // always go back to patrol if active and not resting
         if (is_active and !has_belief(need_rest_belief)) {
             do add_desire(patrol_desire);
@@ -401,13 +398,11 @@ species Police skills: [moving, fipa] control: simple_bdi {
         do remove_belief(need_rest_belief);
         do remove_desire(patrol_desire);
         do remove_desire(pursue_desire);
-        do remove_desire(arrest_desire);
         do remove_desire(rest_desire);
         do remove_intention(patrol_desire, true);
         do remove_intention(pursue_desire, true);
-        do remove_intention(arrest_desire, true);
         do remove_intention(rest_desire, true);
-        
+
         write "!!! POLICE " + name + " DOWN !!!";
     }
 
@@ -428,15 +423,13 @@ species Police skills: [moving, fipa] control: simple_bdi {
         // desires
         do remove_desire(patrol_desire);
         do remove_desire(pursue_desire);
-        do remove_desire(arrest_desire);
         do remove_desire(rest_desire);
-        
+
         // intentions
         do remove_intention(patrol_desire, true);
         do remove_intention(pursue_desire, true);
-        do remove_intention(arrest_desire, true);
         do remove_intention(rest_desire, true);
-        
+
         // add back base patrol desire
         do add_desire(patrol_desire);
         
@@ -445,7 +438,7 @@ species Police skills: [moving, fipa] control: simple_bdi {
     
     aspect default {
         rgb c <- #blue;
-        if (has_desire(pursue_desire) or has_desire(arrest_desire)) { c <- #darkblue; }
+        if (has_desire(pursue_desire)) { c <- #darkblue; }
         if (has_desire(rest_desire)) { c <- #lightblue; }
         if (!is_active) { c <- #gray; }
         
