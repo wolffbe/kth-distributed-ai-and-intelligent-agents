@@ -751,6 +751,7 @@ species Journalist skills: [moving, fipa] {
     float speed_mult <- rnd(0.9, 1.1);
     
     bool is_documenting <- false;
+    int documentation_cooldown <- 0; 
     bool was_hit <- false;
     bool is_active <- true;
     float cumulative_reward <- 0.0;
@@ -909,6 +910,11 @@ species Journalist skills: [moving, fipa] {
         bool did_doc <- false;
         is_documenting <- false;
         
+        // decrement cooldown
+        if (documentation_cooldown > 0) {
+            documentation_cooldown <- documentation_cooldown - 1;
+        }
+        
         // execute action
         if (chosen_act = "closer") {
             if (has_evt) {
@@ -923,7 +929,7 @@ species Journalist skills: [moving, fipa] {
                 do wander amplitude: 20.0 speed: 1.0;
             }
         } else if (chosen_act = "document") {
-            if (has_evt) {
+            if (has_evt and documentation_cooldown = 0) {
                 float d <- self distance_to closest_event_loc;
                 // if they were close enough and deemed to have have enough experience (random number against threshold), document event
                 if (d < 20.0 and rnd(0.0, 1.0) < experience) {
@@ -932,6 +938,7 @@ species Journalist skills: [moving, fipa] {
                     total_documented_events <- total_documented_events + 1;
                     doc_rate <- doc_rate + 3.0;
                     is_documenting <- true;
+                    documentation_cooldown <- 10;  // 10-cycle cooldown
                     write name + " DOCUMENTED at dist " + int(d);
                 }
             }
@@ -963,17 +970,6 @@ species Journalist skills: [moving, fipa] {
             else { 
             	reward <- reward + 5.0;
             }
-        }
-        
-        if (has_evt and !did_doc and chosen_act != "flee") {
-            float d <- self distance_to closest_event_loc;
-            if (d < 15) {
-                reward <- reward + 1.0;
-            }
-        }
-        
-        if (chosen_act = "document" and !did_doc) {
-            reward <- reward - 1.0;
         }
         
         cumulative_reward <- cumulative_reward + reward;
@@ -1098,9 +1094,9 @@ experiment ProtestSimulation type: gui {
         }
         
         display "Dynamics" type: 2d refresh: every(5 #cycles) {
-            chart "Aggression & Energy" type: series size: {1.0, 0.5} position: {0, 0} {
+            chart "Aggression" type: series size: {1.0, 0.5} position: {0, 0} {
                 data "Aggression" value: global_aggression color: #red marker: false;
-                data "Threshold" value: aggression_attack_threshold color: #gray marker: false style: line;
+                data "Attack Threshold" value: aggression_attack_threshold color: #gray marker: false style: line;
             }
             chart "Event Rates (smoothed)" type: series size: {1.0, 0.5} position: {0, 0.5} {
                 data "Attacks" value: attack_rate color: #red marker: false;
